@@ -10,3 +10,14 @@ NoMaD: https://github.com/robodhruv/visualnav-transformer
 - Added evaluation and visualization tools for position error, and heading error analysis.
 - Adapted the training and inference pipeline.
 - Only used docking dataset. (not Init)
+
+### Training
+Run training or test from the repository root:
+
+```bash
+PYTHONPATH=$PWD python ./train/train.py -c ./train/config/nomad.yaml
+```
+
+```bash
+python ./train/train.py -c ./train/config/nomad.yaml
+```
