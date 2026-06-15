@@ -15,7 +15,7 @@ NoMaD: https://github.com/robodhruv/visualnav-transformer
 Run training or test from the repository root:
 
 ```bash
-PYTHONPATH=$PWD python ./train/train.py -c ./train/config/nomad.yaml
+export PYTHONPATH=$PWD
 ```
 
 ```bash
