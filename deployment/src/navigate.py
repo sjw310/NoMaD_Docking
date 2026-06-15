@@ -51,6 +51,7 @@ print("Using device:", device)
 
 
 def callback_obs(msg):
+    # obs_img를 context_queue에 넣음
     obs_img = msg_to_pil(msg)
     if context_size is not None:
         if len(context_queue) < context_size + 1:
@@ -92,7 +93,10 @@ def main(args: argparse.Namespace):
     topomap_filenames = sorted(os.listdir(os.path.join(
         TOPOMAP_IMAGES_DIR, args.dir)), key=lambda x: int(x.split(".")[0]))
     topomap_dir = f"{TOPOMAP_IMAGES_DIR}/{args.dir}"
+    
     num_nodes = len(os.listdir(topomap_dir))
+    
+    # topomap: [0.png,1.png,2.png,3.png,...]를 담은 리스트
     topomap = []
     for i in range(num_nodes):
         image_path = os.path.join(topomap_dir, topomap_filenames[i])
@@ -104,13 +108,19 @@ def main(args: argparse.Namespace):
         goal_node = len(topomap) - 1
     else:
         goal_node = args.goal_node
+
     reached_goal = False
 
-     # ROS
+    # ROS
+    # 현재 프로그램을 ROS에 EXPLORATION이라는 이름으로 등록
     rospy.init_node("EXPLORATION", anonymous=False)
+    # 실행 주기 설정
     rate = rospy.Rate(RATE)
+
+    # 토픽 구독, 새 Image 오면 callback_obs 실행
     image_curr_msg = rospy.Subscriber(
         IMAGE_TOPIC, Image, callback_obs, queue_size=1)
+    
     waypoint_pub = rospy.Publisher(
         WAYPOINT_TOPIC, Float32MultiArray, queue_size=1)  
     sampled_actions_pub = rospy.Publisher(SAMPLED_ACTIONS_TOPIC, Float32MultiArray, queue_size=1)
@@ -130,6 +140,7 @@ def main(args: argparse.Namespace):
     while not rospy.is_shutdown():
         # EXPLORATION MODE
         chosen_waypoint = np.zeros(4)
+
         if len(context_queue) > model_params["context_size"]:
             if model_params["model_type"] == "nomad":
                 obs_images = transform_images(context_queue, model_params["image_size"], center_crop=False)
@@ -144,11 +155,15 @@ def main(args: argparse.Namespace):
                 goal_image = torch.concat(goal_image, dim=0)
 
                 obsgoal_cond = model('vision_encoder', obs_img=obs_images.repeat(len(goal_image), 1, 1, 1), goal_img=goal_image, input_goal_mask=mask.repeat(len(goal_image)))
+                
                 dists = model("dist_pred_net", obsgoal_cond=obsgoal_cond)
                 dists = to_numpy(dists.flatten())
                 min_idx = np.argmin(dists)
                 closest_node = min_idx + start
                 print("closest node:", closest_node)
+
+                # subgoal
+                # 가장 가까운 node가 충분히 가깝다면 다음 node를 subgoal로 선택. 아직 멀면 현재 closest node를 subgoal로 유지
                 sg_idx = min(min_idx + int(dists[min_idx] < args.close_threshold), len(obsgoal_cond) - 1)
                 obs_cond = obsgoal_cond[sg_idx].unsqueeze(0)
 
@@ -245,6 +260,7 @@ if __name__ == "__main__":
         type=str,
         help="model name (only nomad is supported) (hint: check ../config/models.yaml) (default: nomad)",
     )
+    # diffusion policy가 예측한 trajectory 중 몇 번째 waypoint를 사용할지
     parser.add_argument(
         "--waypoint",
         "-w",

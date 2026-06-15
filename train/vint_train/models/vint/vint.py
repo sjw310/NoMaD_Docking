@@ -18,6 +18,7 @@ class ViNT(BaseModel):
         mha_num_attention_heads: Optional[int] = 2,
         mha_num_attention_layers: Optional[int] = 2,
         mha_ff_dim_factor: Optional[int] = 4,
+        predict_velocity: bool = False,
     ) -> None:
         """
         ViNT class: uses a Transformer-based architecture to encode (current and past) visual observations 
@@ -36,13 +37,19 @@ class ViNT(BaseModel):
         self.goal_encoding_size = obs_encoding_size
 
         self.late_fusion = late_fusion
+
         if obs_encoder.split("-")[0] == "efficientnet":
+            
+            # obs_encoder
             self.obs_encoder = EfficientNet.from_name(obs_encoder, in_channels=3) # context
             self.num_obs_features = self.obs_encoder._fc.in_features
+
+            # goal_encoder
             if self.late_fusion:
                 self.goal_encoder = EfficientNet.from_name("efficientnet-b0", in_channels=3)
             else:
                 self.goal_encoder = EfficientNet.from_name("efficientnet-b0", in_channels=6) # obs+goal
+            
             self.num_goal_features = self.goal_encoder._fc.in_features
         else:
             raise NotImplementedError
@@ -71,6 +78,7 @@ class ViNT(BaseModel):
         self.action_predictor = nn.Sequential(
             nn.Linear(32, self.len_trajectory_pred * self.num_action_params),
         )
+        self.predict_velocity = predict_velocity
 
     def forward(
         self, obs_img: torch.tensor, goal_img: torch.tensor,
@@ -83,10 +91,14 @@ class ViNT(BaseModel):
         else:
             obsgoal_img = torch.cat([obs_img[:, 3*self.context_size:, :, :], goal_img], dim=1)
             goal_encoding = self.goal_encoder.extract_features(obsgoal_img)
+        
         goal_encoding = self.goal_encoder._avg_pooling(goal_encoding)
+        
         if self.goal_encoder._global_params.include_top:
             goal_encoding = goal_encoding.flatten(start_dim=1)
             goal_encoding = self.goal_encoder._dropout(goal_encoding)
+
+            
         # currently, the size of goal_encoding is [batch_size, num_goal_features]
         goal_encoding = self.compress_goal_enc(goal_encoding)
         if len(goal_encoding.shape) == 2:
@@ -126,15 +138,21 @@ class ViNT(BaseModel):
         dist_pred = self.dist_predictor(final_repr)
         action_pred = self.action_predictor(final_repr)
 
-        # augment outputs to match labels size-wise
+
+
         action_pred = action_pred.reshape(
             (action_pred.shape[0], self.len_trajectory_pred, self.num_action_params)
         )
-        action_pred[:, :, :2] = torch.cumsum(
-            action_pred[:, :, :2], dim=1
-        )  # convert position deltas into waypoints
+
+        if not self.predict_velocity:
+            # torch.cumsum: 누적합
+            action_pred[:, :, :2] = torch.cumsum(
+                action_pred[:, :, :2], dim=1
+            )
+
         if self.learn_angle:
             action_pred[:, :, 2:] = F.normalize(
                 action_pred[:, :, 2:].clone(), dim=-1
-            )  # normalize the angle prediction
+            )
+
         return dist_pred, action_pred

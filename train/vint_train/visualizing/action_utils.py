@@ -304,6 +304,7 @@ def plot_trajs_and_points(
                 color=traj_colors[i],
                 alpha=traj_alphas[i] if traj_alphas is not None else 1.0,
                 marker="o",
+                markersize=0.5
             )
         else:
             ax.plot(
@@ -313,8 +314,11 @@ def plot_trajs_and_points(
                 label=traj_labels[i],
                 alpha=traj_alphas[i] if traj_alphas is not None else 1.0,
                 marker="o",
+                markersize=0.5
             )
-        if traj.shape[1] > 2 and quiver_freq > 0:  # traj data also includes yaw of the robot
+
+        # traj data also includes yaw of the robot
+        if traj.shape[1] > 2 and quiver_freq > 0:  
             bearings = gen_bearings_from_waypoints(traj)
             ax.quiver(
                 traj[::quiver_freq, 0],
@@ -324,6 +328,8 @@ def plot_trajs_and_points(
                 color=traj_colors[i] * 0.5,
                 scale=1.0,
             )
+
+
     for i, pt in enumerate(list_points):
         if point_labels is None:
             ax.plot(
@@ -331,7 +337,7 @@ def plot_trajs_and_points(
                 pt[1], 
                 color=point_colors[i], 
                 alpha=point_alphas[i] if point_alphas is not None else 1.0,
-                marker="o",
+                marker="*",
                 markersize=7.0
             )
         else:

@@ -17,6 +17,12 @@ from torchvision import transforms
 from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
 from diffusers.training_utils import EMAModel
 
+import matplotlib.pyplot as plt
+
+import gc
+import ctypes
+import psutil
+
 def train_eval_loop(
     train_model: bool,
     model: nn.Module,
@@ -65,6 +71,7 @@ def train_eval_loop(
         eval_fraction: fraction of training data to use for evaluation
     """
     assert 0 <= alpha <= 1
+    
     latest_path = os.path.join(project_folder, f"latest.pth")
 
     for epoch in range(current_epoch, current_epoch + epochs):
@@ -123,7 +130,8 @@ def train_eval_loop(
             "scheduler": scheduler
         }
         # log average eval loss
-        wandb.log({}, commit=False)
+        if use_wandb:
+            wandb.log({}, commit=False)
 
         if scheduler is not None:
             # scheduler calls based on the type of scheduler
@@ -131,21 +139,23 @@ def train_eval_loop(
                 scheduler.step(np.mean(avg_total_test_loss))
             else:
                 scheduler.step()
-        wandb.log({
-            "avg_total_test_loss": np.mean(avg_total_test_loss),
-            "lr": optimizer.param_groups[0]["lr"],
-        }, commit=False)
+        if use_wandb:
+            wandb.log({
+                "avg_total_test_loss": np.mean(avg_total_test_loss),
+                "lr": optimizer.param_groups[0]["lr"],
+            }, commit=False)
 
         numbered_path = os.path.join(project_folder, f"{epoch}.pth")
         torch.save(checkpoint, latest_path)
         torch.save(checkpoint, numbered_path)  # keep track of model at every epoch
 
     # Flush the last set of eval logs
-    wandb.log({})
+    if use_wandb:
+        wandb.log({})
     print()
 
 def train_eval_loop_nomad(
-    train_model: bool,
+    train_model: bool, # T,F
     model: nn.Module,
     optimizer: Adam, 
     lr_scheduler: torch.optim.lr_scheduler._LRScheduler,
@@ -162,10 +172,13 @@ def train_eval_loop_nomad(
     image_log_freq: int = 1000,
     num_images_log: int = 8,
     current_epoch: int = 0,
-    alpha: float = 1e-4,
+    alpha: float = 0.1,
     use_wandb: bool = True,
     eval_fraction: float = 0.25,
     eval_freq: int = 1,
+    predict_velocity = True,
+    ACTION_STATS = None,
+    max_distance = 400
 ):
     """
     Train and evaluate the model for several epochs (vint or gnm models)
@@ -195,10 +208,11 @@ def train_eval_loop_nomad(
     latest_path = os.path.join(project_folder, f"latest.pth")
     ema_model = EMAModel(model=model,power=0.75)
     
-    for epoch in range(current_epoch, current_epoch + epochs):
-        if train_model:
+    if train_model:
+        for epoch in range(current_epoch, epochs):
+            
             print(
-            f"Start ViNT DP Training Epoch {epoch}/{current_epoch + epochs - 1}"
+            f"Start Nomad DP Training Epoch {epoch}/{epochs - 1}"
             )
             train_nomad(
                 model=model,
@@ -217,69 +231,86 @@ def train_eval_loop_nomad(
                 num_images_log=num_images_log,
                 use_wandb=use_wandb,
                 alpha=alpha,
+                predict_velocity=predict_velocity,
+                ACTION_STATS=ACTION_STATS,
+                max_distance=max_distance
             )
+            
             lr_scheduler.step()
 
-        numbered_path = os.path.join(project_folder, f"ema_{epoch}.pth")
-        torch.save(ema_model.averaged_model.state_dict(), numbered_path)
-        numbered_path = os.path.join(project_folder, f"ema_latest.pth")
-        print(f"Saved EMA model to {numbered_path}")
+            numbered_path = os.path.join(project_folder, f"ema_{epoch}.pth")
+            torch.save(ema_model.averaged_model.state_dict(), numbered_path)
+            numbered_path = os.path.join(project_folder, f"ema_latest.pth")
+            print(f"Saved EMA model to {numbered_path}")
 
-        numbered_path = os.path.join(project_folder, f"{epoch}.pth")
-        torch.save(model.state_dict(), numbered_path)
-        torch.save(model.state_dict(), latest_path)
-        print(f"Saved model to {numbered_path}")
+            numbered_path = os.path.join(project_folder, f"{epoch}.pth")
+            torch.save(model.state_dict(), numbered_path)
+            torch.save(model.state_dict(), latest_path)
+            print(f"Saved model to {numbered_path}")
 
-        # save optimizer
-        numbered_path = os.path.join(project_folder, f"optimizer_{epoch}.pth")
-        latest_optimizer_path = os.path.join(project_folder, f"optimizer_latest.pth")
-        torch.save(optimizer.state_dict(), latest_optimizer_path)
+            # save optimizer
+            numbered_path = os.path.join(project_folder, f"optimizer_{epoch}.pth")
+            latest_optimizer_path = os.path.join(project_folder, f"optimizer_latest.pth")
+            torch.save(optimizer.state_dict(), latest_optimizer_path)
 
-        # save scheduler
-        numbered_path = os.path.join(project_folder, f"scheduler_{epoch}.pth")
-        latest_scheduler_path = os.path.join(project_folder, f"scheduler_latest.pth")
-        torch.save(lr_scheduler.state_dict(), latest_scheduler_path)
+            # save scheduler
+            numbered_path = os.path.join(project_folder, f"scheduler_{epoch}.pth")
+            latest_scheduler_path = os.path.join(project_folder, f"scheduler_latest.pth")
+            torch.save(lr_scheduler.state_dict(), latest_scheduler_path)
+            
+            if use_wandb:
+                wandb.log({
+                    "lr": optimizer.param_groups[0]["lr"],
+                }, commit=False)
+            
+    
+            if use_wandb:
+                wandb.log({}, commit=False)
 
+            
+            # epoch 마다 수행
+            rss_before = psutil.Process().memory_info().rss
 
-        if (epoch + 1) % eval_freq == 0: 
-            for dataset_type in test_dataloaders:
-                print(
-                    f"Start {dataset_type} ViNT DP Testing Epoch {epoch}/{current_epoch + epochs - 1}"
-                )
-                loader = test_dataloaders[dataset_type]
-                evaluate_nomad(
-                    eval_type=dataset_type,
-                    ema_model=ema_model,
-                    dataloader=loader,
-                    transform=transform,
-                    device=device,
-                    noise_scheduler=noise_scheduler,
-                    goal_mask_prob=goal_mask_prob,
-                    project_folder=project_folder,
-                    epoch=epoch,
-                    print_log_freq=print_log_freq,
-                    num_images_log=num_images_log,
-                    wandb_log_freq=wandb_log_freq,
-                    use_wandb=use_wandb,
-                    eval_fraction=eval_fraction,
-                )
-        wandb.log({
-            "lr": optimizer.param_groups[0]["lr"],
-        }, commit=False)
+            gc.collect()
+            ctypes.CDLL("libc.so.6").malloc_trim(0)
 
-        if lr_scheduler is not None:
-            lr_scheduler.step()
+            rss_after = psutil.Process().memory_info().rss
 
-        # log average eval loss
-        wandb.log({}, commit=False)
-
-        wandb.log({
-            "lr": optimizer.param_groups[0]["lr"],
-        }, commit=False)
-
+            print((rss_before-rss_after)/1024**3)
+    
+    else:
         
+        # Test
+        for dataset_type in test_dataloaders:
+            print(
+                f"Start {dataset_type} Nomad DP Testing"
+            )
+            loader = test_dataloaders[dataset_type]
+            
+            evaluate_nomad(
+                eval_type=dataset_type,
+                ema_model=ema_model,
+                dataloader=loader,
+                transform=transform,
+                device=device,
+                noise_scheduler=noise_scheduler,
+                goal_mask_prob=goal_mask_prob,
+                project_folder=project_folder,
+                epoch=current_epoch,
+                print_log_freq=print_log_freq,
+                image_log_freq=image_log_freq,
+                num_images_log=num_images_log,
+                wandb_log_freq=wandb_log_freq,
+                use_wandb=use_wandb,
+                eval_fraction=eval_fraction,
+                predict_velocity = predict_velocity,
+                ACTION_STATS=ACTION_STATS,
+                max_distance=max_distance
+            )
+
     # Flush the last set of eval logs
-    wandb.log({})
+    if use_wandb:
+        wandb.log({})
     print()
 
 def load_model(model, model_type, checkpoint: dict) -> None:

@@ -1,13 +1,22 @@
-project_name: nomad
-run_name: nomad
+# =============================================================
+# NoMaD base code와 다른 부분
+# - distance label max normalization 적용
+# - waypoint 예측이 아닌 velocity 예측
+# =============================================================
+
+# nomad_train / nomad_test
+project_name: nomad_train
+# dist_max_norm : distance label max normalization / p : action prediction length / a : action_max_dist_cat / d : distance_max_dist_cat
+run_name: nomad_dist_max_norm_p60_a100_d100 
 
 # training setup
-use_wandb: True # set to false if you don't want to log to wandb
-train: True
-batch_size: 256
+use_wandb: False # set to false if you don't want to log to wandb
+train: False # train : True / test : False
+batch_size: 8
+
 epochs: 100
 gpu_ids: [0]
-num_workers: 12
+num_workers: 1
 lr: 1e-4
 optimizer: adamw
 clipping: False
@@ -19,6 +28,12 @@ cyclic_period: 10
 plateau_patience: 3
 plateau_factor: 0.5
 seed: 0
+
+# Resume training from previous run
+#load_run: "nomad_train/~" # file path 지정
+
+# load pretrained model for testing
+#test_load_model: "nomad_train/~" # file path 지정
 
 # model params
 model_type: nomad
@@ -39,63 +54,98 @@ num_diffusion_iters: 10
 goal_mask_prob: 0.5
 
 # normalization for the action space
-normalize: True
+normalize: True # used min-max norm, scaled to [-1,1] (maybe same as the NoMaD)
 
 # context
 context_type: temporal
-context_size: 3 # 5
-alpha: 1e-4
+context_size: 5 # 3 or 5
+
+# default는 1e-4, 대신 distance 정규화 안함
+alpha: 0.3 # dist_loss * alpha + action_loss * (1-alpha)
 
 # distance bounds for distance and action and distance predictions 
 distance:
   min_dist_cat: 0
-  max_dist_cat: 20
+  max_dist_cat: 100
 action:
-  min_dist_cat: 3
-  max_dist_cat: 20
+  min_dist_cat: 0
+  max_dist_cat: 100
 
 # action output params
-len_traj_pred: 8
-learn_angle: False
+len_traj_pred: 60
+learn_angle: False # related to the waypoint prediction case, not the velocity one.
+
+# velocity를 direct로 predict 할지 혹은 NoMaD 방식의 상대 이동량을 따를지
+predict_velocity : True
 
 # dataset specific parameters
-image_size: [96, 96] # width, height
+image_size: [320, 240] # width, height
 datasets:
-  recon:
-    data_folder: /home/<username>/nomad_dataset/recon
-    train: /home/<username>/data_splits/recon/train/ # path to train folder with traj_names.txt
-    test: /home/<username>/data_splits/recon/test/ # path to test folder with traj_names.txt
-    end_slack: 3 # because many trajectories end in collisions
-    goals_per_obs: 1 # how many goals are sampled per observation
-    negative_mining: True # negative mining from the ViNG paper (Shah et al.)
-  go_stanford:
-    data_folder: /home/<username>/nomad_dataset/go_stanford_cropped # datasets/stanford_go_new
-    train: /home/<username>/data_splits/go_stanford/train/
-    test: /home/<username>/data_splits/go_stanford/test/
-    end_slack: 0
-    goals_per_obs: 2 # increase dataset size
-    negative_mining: True
-  cory_hall:
-    data_folder: /home/<username>/nomad_dataset/cory_hall/
-    train: /home/<username>/data_splits/cory_hall/train/
-    test: /home/<username>/data_splits/cory_hall/test/
-    end_slack: 3 # because many trajectories end in collisions
-    goals_per_obs: 1
-    negative_mining: True
-  tartan_drive:
-    data_folder: /home/<username>/nomad_dataset/tartan_drive/
-    train: /home/<username>/data_splits/tartan_drive/train/
-    test: /home/<username>/data_splits/tartan_drive/test/
-    end_slack: 3 # because many trajectories end in collisions
-    goals_per_obs: 1
-    negative_mining: True
-  sacson:
-    data_folder: /home/<username>/nomad_dataset/sacson/
-    train: /home/<username>/data_splits/sacson/train/
-    test: /home/<username>/data_splits/sacson/test/
-    end_slack: 3 # because many trajectories end in collisions
-    goals_per_obs: 1
-    negative_mining: True
+
+
+  # NoMaD / ViNT 데이터셋 구조는 trajectory 폴더 + 이미지 파일 + pkl 구조
+  # h5에 맞춰서 따로 module을 만든 상태: vint_dataset_episode.py
+  episode_postech_260330_dock:
+    format: h5
+
+    # h5 file path 지정
+    h5_path: ??? #"/home/<username>/~/*.h5"
+
+
+    image_key: "image_bottom" # room2 image만 사용중
+    action_key: "encoder"
+
+    test_other_episode : True # For the test mode(non-seen data), not the eval mode
+
+    # h5 file path 지정
+    test_h5_path: ??? #"/home/<username>/~/*.h5"
+
+    test_episode_num: 2 # test(non-seen data) 혹은 evaluation 할 episode number
+    use_global_goal_for_test : True # True : always gives the global goal
+
+    context_spacing : 6 
+    waypoint_spacing: 1 # waypoint or velocity 몇 step 간격으로 사용할지
+    end_slack: 0 # trajectory 끝부분을 얼마나 버릴지
+    negative_mining: True # negative sample(틀린 goal)을 사용할지 여부
+    goals_per_obs: 1 # observation 하나당 몇 개 goal 샘플 생성할지
+
+  
+  # Default way to loading the dataset
+  # recon:
+  #   data_folder: /home/<username>/nomad_dataset/recon
+  #   train: /home/<username>/data_splits/recon/train/ # path to train folder with traj_names.txt
+  #   test: /home/<username>/data_splits/recon/test/ # path to test folder with traj_names.txt
+  #   end_slack: 3 # because many trajectories end in collisions
+  #   goals_per_obs: 1 # how many goals are sampled per observation
+  #   negative_mining: True # negative mining from the ViNG paper (Shah et al.)
+  # go_stanford:
+  #   data_folder: /home/<username>/nomad_dataset/go_stanford_cropped # datasets/stanford_go_new
+  #   train: /home/<username>/data_splits/go_stanford/train/
+  #   test: /home/<username>/data_splits/go_stanford/test/
+  #   end_slack: 0
+  #   goals_per_obs: 2 # increase dataset size
+  #   negative_mining: True
+  # cory_hall:
+  #   data_folder: /home/<username>/nomad_dataset/cory_hall/
+  #   train: /home/<username>/data_splits/cory_hall/train/
+  #   test: /home/<username>/data_splits/cory_hall/test/
+  #   end_slack: 3 # because many trajectories end in collisions
+  #   goals_per_obs: 1
+  #   negative_mining: True
+  # tartan_drive:
+  #   data_folder: /home/<username>/nomad_dataset/tartan_drive/
+  #   train: /home/<username>/data_splits/tartan_drive/train/
+  #   test: /home/<username>/data_splits/tartan_drive/test/
+  #   end_slack: 3 # because many trajectories end in collisions
+  #   goals_per_obs: 1
+  #   negative_mining: True
+  # sacson:
+  #   data_folder: /home/<username>/nomad_dataset/sacson/
+  #   train: /home/<username>/data_splits/sacson/train/
+  #   test: /home/<username>/data_splits/sacson/test/
+  #   end_slack: 3 # because many trajectories end in collisions
+  #   goals_per_obs: 1
+  #   negative_mining: True
   # private datasets (uncomment if you have access)
   # seattle:
   #   data_folder: /home/<username>/nomad_dataset/seattle/
@@ -114,10 +164,10 @@ datasets:
 
 # logging stuff
 ## =0 turns off
-print_log_freq: 100 # in iterations
-image_log_freq: 1000 #0 # in iterations
+print_log_freq: 4000 # in iterations
+image_log_freq: 1 #0 # in iterations
 num_images_log: 8 #0 
 pairwise_test_freq: 0 # in epochs
-eval_fraction: 0.25
+eval_fraction: 1.0
 wandb_log_freq: 10 # in iterations
-eval_freq: 1 # in epochs
+eval_freq: 1000000 # in epochs

@@ -11,7 +11,7 @@ from vint_train.visualizing.action_utils import visualize_traj_pred, plot_trajs_
 from vint_train.visualizing.distance_utils import visualize_dist_pred
 from vint_train.visualizing.visualize_utils import to_numpy, from_numpy
 from vint_train.training.logger import Logger
-from vint_train.data.data_utils import VISUALIZATION_IMAGE_SIZE
+from vint_train.data.data_utils import VISUALIZATION_IMAGE_SIZE # (160, 120)
 from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
 from diffusers.training_utils import EMAModel
 
@@ -24,6 +24,10 @@ from torchvision import transforms
 import torchvision.transforms.functional as TF
 import matplotlib.pyplot as plt
 
+import psutil
+import gc
+
+"""
 # LOAD DATA CONFIG
 with open(os.path.join(os.path.dirname(__file__), "../data/data_config.yaml"), "r") as f:
     data_config = yaml.safe_load(f)
@@ -31,8 +35,10 @@ with open(os.path.join(os.path.dirname(__file__), "../data/data_config.yaml"), "
 ACTION_STATS = {}
 for key in data_config['action_stats']:
     ACTION_STATS[key] = np.array(data_config['action_stats'][key])
-
+"""
+    
 # Train utils for ViNT and GNM
+
 def _compute_losses(
     dist_label: torch.Tensor,
     action_label: torch.Tensor,
@@ -41,55 +47,182 @@ def _compute_losses(
     alpha: float,
     learn_angle: bool,
     action_mask: torch.Tensor = None,
+    max_dist = 20.0
 ):
     """
     Compute losses for distance and action prediction.
-
     """
-    dist_loss = F.mse_loss(dist_pred.squeeze(-1), dist_label.float())
+
+    if not hasattr(_compute_losses, "debug_count"):
+        _compute_losses.debug_count = 0
+
+    debug_now = (_compute_losses.debug_count % 100 == 0) # False
+
+
+    dist_pred_norm = dist_pred.squeeze(-1)
+    dist_pred_scaled = dist_pred_norm * max_dist
+    dist_label_norm = dist_label.float() / max_dist
+
+    dist_loss = F.mse_loss(dist_pred_norm, dist_label_norm)
+
+    if debug_now:
+        print("\n===== DIST DEBUG =====")
+        print("dist_pred shape:", dist_pred.shape)
+        print("dist_label shape:", dist_label.shape)
+
+        print("pred_scaled[:8]:", np.round(dist_pred_scaled[:8].detach().cpu().numpy(), 3))
+        print("pred_norm[:8]:", np.round(dist_pred_norm[:8].detach().cpu().numpy(), 3))
+        print("label[:8]:", dist_label[:8].detach().cpu().numpy())
+        print("label_norm[:8]:", np.round(dist_label_norm[:8].detach().cpu().numpy(), 3))
+
+        print("scaled_mse[:8]:",np.round((dist_pred_scaled[:8] - dist_label[:8].float()).pow(2).detach().cpu().numpy(),3,),)
+        print("norm_mse[:8]:",np.round((dist_pred_norm[:8] - dist_label_norm[:8]).pow(2).detach().cpu().numpy(),6,),)
+
+        print(
+            "pred_scaled mean/min/max:",
+            dist_pred_scaled.mean().item(),
+            dist_pred_scaled.min().item(),
+            dist_pred_scaled.max().item(),
+        )
+
+        print(
+            "label mean/min/max:",
+            dist_label.float().mean().item(),
+            dist_label.float().min().item(),
+            dist_label.float().max().item(),
+        )
+
+        print("dist_loss:", dist_loss.item())
+        print("======================\n")
 
     def action_reduce(unreduced_loss: torch.Tensor):
-        # Reduce over non-batch dimensions to get loss per batch element
         while unreduced_loss.dim() > 1:
             unreduced_loss = unreduced_loss.mean(dim=-1)
-        assert unreduced_loss.shape == action_mask.shape, f"{unreduced_loss.shape} != {action_mask.shape}"
+
+        assert unreduced_loss.shape == action_mask.shape, (
+            f"{unreduced_loss.shape} != {action_mask.shape}"
+        )
+
         return (unreduced_loss * action_mask).mean() / (action_mask.mean() + 1e-2)
 
-    # Mask out invalid inputs (for negatives, or when the distance between obs and goal is large)
-    assert action_pred.shape == action_label.shape, f"{action_pred.shape} != {action_label.shape}"
-    action_loss = action_reduce(F.mse_loss(action_pred, action_label, reduction="none"))
+    assert action_pred.shape == action_label.shape, (
+        f"{action_pred.shape} != {action_label.shape}"
+    )
 
-    action_waypts_cos_similairity = action_reduce(F.cosine_similarity(
-        action_pred[:, :, :2], action_label[:, :, :2], dim=-1
-    ))
-    multi_action_waypts_cos_sim = action_reduce(F.cosine_similarity(
-        torch.flatten(action_pred[:, :, :2], start_dim=1),
-        torch.flatten(action_label[:, :, :2], start_dim=1),
-        dim=-1,
-    ))
+    per_elem_action_mse = F.mse_loss(
+        action_pred,
+        action_label,
+        reduction="none",
+    )
+
+    action_loss = action_reduce(per_elem_action_mse)
+
+    if debug_now:
+        print("\n===== ACTION DEBUG =====")
+        print("action_pred shape:", action_pred.shape)
+        print("action_label shape:", action_label.shape)
+        print("action_mask shape:", action_mask.shape)
+
+        print("mask[:8]:", action_mask[:8].detach().cpu().numpy())
+        print("mask mean:", action_mask.float().mean().item())
+
+        print("pred[0]:")
+        print(np.round(action_pred[0].detach().cpu().numpy(), 4))
+
+        print("label[0]:")
+        print(np.round(action_label[0].detach().cpu().numpy(), 4))
+
+        print(
+            "pred mean/min/max:",
+            action_pred.mean().item(),
+            action_pred.min().item(),
+            action_pred.max().item(),
+        )
+
+        print(
+            "label mean/min/max:",
+            action_label.mean().item(),
+            action_label.min().item(),
+            action_label.max().item(),
+        )
+
+        print("per_elem_mse[0]:")
+        print(np.round(per_elem_action_mse[0].detach().cpu().numpy(), 6))
+
+        per_sample_mse = per_elem_action_mse
+        while per_sample_mse.dim() > 1:
+            per_sample_mse = per_sample_mse.mean(dim=-1)
+            
+        print(
+            "per_sample_mse[:8]:",
+            np.round(per_sample_mse[:8].detach().cpu().numpy(), 6),
+        )
+
+        print(
+            "masked_per_sample_mse[:8]:",
+            np.round(
+                (per_sample_mse[:8] * action_mask[:8])
+                .detach()
+                .cpu()
+                .numpy(),
+                6,
+            ),
+        )
+
+        print("action_loss:", action_loss.item())
+        print("========================\n")
+
+    action_waypts_cos_similairity = action_reduce(
+        F.cosine_similarity(
+            action_pred[:, :, :2],
+            action_label[:, :, :2],
+            dim=-1,
+            eps=1e-8,
+        )
+    )
+
+    multi_action_waypts_cos_sim = action_reduce(
+        F.cosine_similarity(
+            torch.flatten(action_pred[:, :, :2], start_dim=1),
+            torch.flatten(action_label[:, :, :2], start_dim=1),
+            dim=-1,
+            eps=1e-8,
+        )
+    )
 
     results = {
         "dist_loss": dist_loss,
         "action_loss": action_loss,
-        "action_waypts_cos_sim": action_waypts_cos_similairity,
-        "multi_action_waypts_cos_sim": multi_action_waypts_cos_sim,
+        # "action_waypts_cos_sim": action_waypts_cos_similairity,
+        # "multi_action_waypts_cos_sim": multi_action_waypts_cos_sim,
     }
 
     if learn_angle:
-        action_orien_cos_sim = action_reduce(F.cosine_similarity(
-            action_pred[:, :, 2:], action_label[:, :, 2:], dim=-1
-        ))
-        multi_action_orien_cos_sim = action_reduce(F.cosine_similarity(
-            torch.flatten(action_pred[:, :, 2:], start_dim=1),
-            torch.flatten(action_label[:, :, 2:], start_dim=1),
-            dim=-1,
+        action_orien_cos_sim = action_reduce(
+            F.cosine_similarity(
+                action_pred[:, :, 2:],
+                action_label[:, :, 2:],
+                dim=-1,
+                eps=1e-8,
             )
         )
+
+        multi_action_orien_cos_sim = action_reduce(
+            F.cosine_similarity(
+                torch.flatten(action_pred[:, :, 2:], start_dim=1),
+                torch.flatten(action_label[:, :, 2:], start_dim=1),
+                dim=-1,
+                eps=1e-8,
+            )
+        )
+
         results["action_orien_cos_sim"] = action_orien_cos_sim
         results["multi_action_orien_cos_sim"] = multi_action_orien_cos_sim
 
     total_loss = alpha * 1e-2 * dist_loss + (1 - alpha) * action_loss
     results["total_loss"] = total_loss
+
+    _compute_losses.debug_count += 1
 
     return results
 
@@ -235,6 +368,8 @@ def train(
         dynamic_ncols=True,
         desc=f"Training epoch {epoch}",
     )
+
+    # Unpacking
     for i, data in enumerate(tqdm_iter):
         (
             obs_image,
@@ -254,6 +389,7 @@ def train(
         viz_goal_image = TF.resize(goal_image, VISUALIZATION_IMAGE_SIZE)
         
         goal_image = transform(goal_image).to(device)
+        
         model_outputs = model(obs_image, goal_image)
 
         dist_label = dist_label.to(device)
@@ -386,6 +522,7 @@ def evaluate(
             ) = data
 
             obs_images = torch.split(obs_image, 3, dim=1)
+            # VISUALIZATION_IMAGE_SIZE (160, 120)
             viz_obs_image = TF.resize(obs_images[-1], VISUALIZATION_IMAGE_SIZE)
             obs_images = [transform(obs_image).to(device) for obs_image in obs_images]
             obs_image = torch.cat(obs_images, dim=1)
@@ -393,6 +530,7 @@ def evaluate(
             viz_goal_image = TF.resize(goal_image, VISUALIZATION_IMAGE_SIZE)
 
             goal_image = transform(goal_image).to(device)
+            
             model_outputs = model(obs_image, goal_image)
 
             dist_label = dist_label.to(device)
@@ -453,6 +591,9 @@ def _compute_losses_nomad(
     batch_action_label: torch.Tensor,
     device: torch.device,
     action_mask: torch.Tensor,
+    predict_velocity: bool = True,
+    ACTION_STATS = None,
+    max_distance = 400,
 ):
     """
     Compute losses for distance and action prediction.
@@ -470,12 +611,64 @@ def _compute_losses_nomad(
         action_dim,
         num_samples=1,
         device=device,
+        predict_velocity=predict_velocity,
     )
     uc_actions = model_output_dict['uc_actions']
     gc_actions = model_output_dict['gc_actions']
     gc_distance = model_output_dict['gc_distance']
 
-    gc_dist_loss = F.mse_loss(gc_distance, batch_dist_label.unsqueeze(-1))
+    debug_now =True
+
+    if debug_now:
+        b = 0  # batch 안에서 볼 샘플 index
+        
+        np.set_printoptions(suppress=True, precision=5)
+
+        print("\n===== NOMAD ACTION DEBUG =====")
+        print("uc_actions shape:", uc_actions.shape)
+        print("gc_actions shape:", gc_actions.shape)
+        print("label shape:", batch_action_label.shape)
+        print("action_mask:", action_mask[b].item())
+        print("distance label:", batch_dist_label[b].item())
+
+        print("\n[UC pred action]")
+        print(np.round(uc_actions[b][:5].detach().cpu().numpy(), 5))
+
+        print("\n[GC pred action]")
+        print(np.round(gc_actions[b][:5].detach().cpu().numpy(), 5))
+
+        print("\n[GT action label]")
+        print(np.round(batch_action_label[b][:5].detach().cpu().numpy(), 5))
+
+        print("\n[GC - GT]")
+        print(np.round((gc_actions[b][:5] - batch_action_label[b][:5]).detach().cpu().numpy(), 5))
+
+        print("\n===== NOMAD DIST DEBUG =====")
+        print("gc_distance shape:", gc_distance.shape)
+        print("batch_dist_label shape:", batch_dist_label.shape)
+
+        gc_distance_scaled = gc_distance * max_distance
+
+        print("gc_distance norm:", gc_distance[b].detach().cpu().numpy())
+        print("gc_distance scaled:", gc_distance_scaled[b].detach().cpu().numpy())
+        print("dist_label:", batch_dist_label[b].detach().cpu().numpy())
+
+        print("gc_distance[:8]:")
+        print(np.round(gc_distance[:8].detach().cpu().numpy().squeeze(), 5))
+        print("gc_distance_scaled[:8]:")
+        print(np.round(gc_distance_scaled[:8].detach().cpu().numpy().squeeze(), 5))
+        print("dist_label[:8]:")
+        print(batch_dist_label[:8].detach().cpu().numpy())
+
+        print("dist error[:8]:")
+        print(np.round((gc_distance_scaled[:8].squeeze(-1) - batch_dist_label[:8]).detach().cpu().numpy(),5))
+
+        print("==============================\n")
+
+    # loss 계산 시 distance label 0~1 정규화
+    dist_target = batch_dist_label.float().unsqueeze(-1) / max_distance
+    gc_dist_loss = F.mse_loss(gc_distance,dist_target)
+
 
     def action_reduce(unreduced_loss: torch.Tensor):
         # Reduce over non-batch dimensions to get loss per batch element
@@ -533,12 +726,15 @@ def train_nomad(
     goal_mask_prob: float,
     project_folder: str,
     epoch: int,
-    alpha: float = 1e-4,
+    alpha: float = 0.1,
     print_log_freq: int = 100,
     wandb_log_freq: int = 10,
     image_log_freq: int = 1000,
     num_images_log: int = 8,
     use_wandb: bool = True,
+    predict_velocity: bool = True,
+    ACTION_STATS =None,
+    max_distance = 400
 ):
     """
     Train the model for one epoch.
@@ -560,6 +756,7 @@ def train_nomad(
         use_wandb: whether to use wandb
     """
     goal_mask_prob = torch.clip(torch.tensor(goal_mask_prob), 0, 1)
+    
     model.train()
     num_batches = len(dataloader)
 
@@ -580,12 +777,12 @@ def train_nomad(
     )
     loggers = {
         "uc_action_loss": uc_action_loss_logger,
-        "uc_action_waypts_cos_sim": uc_action_waypts_cos_sim_logger,
-        "uc_multi_action_waypts_cos_sim": uc_multi_action_waypts_cos_sim_logger,
+        #"uc_action_waypts_cos_sim": uc_action_waypts_cos_sim_logger, # for waypoint prediction
+        #"uc_multi_action_waypts_cos_sim": uc_multi_action_waypts_cos_sim_logger, # for waypoint prediction
         "gc_dist_loss": gc_dist_loss_logger,
         "gc_action_loss": gc_action_loss_logger,
-        "gc_action_waypts_cos_sim": gc_action_waypts_cos_sim_logger,
-        "gc_multi_action_waypts_cos_sim": gc_multi_action_waypts_cos_sim_logger,
+        #"gc_action_waypts_cos_sim": gc_action_waypts_cos_sim_logger, # for waypoint prediction
+        #"gc_multi_action_waypts_cos_sim": gc_multi_action_waypts_cos_sim_logger, # for waypoint prediction
     }
     with tqdm.tqdm(dataloader, desc="Train Batch", leave=False) as tepoch:
         for i, data in enumerate(tepoch):
@@ -597,14 +794,31 @@ def train_nomad(
                 goal_pos,
                 dataset_idx,
                 action_mask, 
+                ep_idx,
+                curr_time,
             ) = data
-            
+
+            """
+            torch.as_tensor(obs_image, dtype=torch.float32),
+            torch.as_tensor(goal_image, dtype=torch.float32),
+            actions_torch,
+            torch.as_tensor(distance, dtype=torch.int64),
+            torch.as_tensor(goal_pos, dtype=torch.float32),
+            torch.as_tensor(self.dataset_index, dtype=torch.int64),
+            torch.as_tensor(action_mask, dtype=torch.float32),
+            torch.as_tensor(ep_idx, dtype=torch.int64),
+            torch.as_tensor(curr_time, dtype=torch.int64),
+            """        
+        
             obs_images = torch.split(obs_image, 3, dim=1)
+            
             batch_viz_obs_images = TF.resize(obs_images[-1], VISUALIZATION_IMAGE_SIZE[::-1])
             batch_viz_goal_images = TF.resize(goal_image, VISUALIZATION_IMAGE_SIZE[::-1])
+            
             batch_obs_images = [transform(obs) for obs in obs_images]
             batch_obs_images = torch.cat(batch_obs_images, dim=1).to(device)
             batch_goal_images = transform(goal_image).to(device)
+            
             action_mask = action_mask.to(device)
 
             B = actions.shape[0]
@@ -615,15 +829,25 @@ def train_nomad(
             
             # Get distance label
             distance = distance.float().to(device)
+            # normalize
+            distance_norm = distance / max_distance
+            
+            # 이미 Normalized
+            ndiffusion_target = get_diffusion_target(actions, predict_velocity)
+            
+            #ndiffusion_target = normalize_data(diffusion_target, ACTION_STATS)
+            
+            if isinstance(ndiffusion_target, torch.Tensor):
+                naction = ndiffusion_target.float().to(device)
+            else:
+                naction = from_numpy(ndiffusion_target).to(device)
 
-            deltas = get_delta(actions)
-            ndeltas = normalize_data(deltas, ACTION_STATS)
-            naction = from_numpy(ndeltas).to(device)
             assert naction.shape[-1] == 2, "action dim must be 2"
 
             # Predict distance
+            
             dist_pred = model("dist_pred_net", obsgoal_cond=obsgoal_cond)
-            dist_loss = nn.functional.mse_loss(dist_pred.squeeze(-1), distance)
+            dist_loss = nn.functional.mse_loss(dist_pred.squeeze(-1), distance_norm)
             dist_loss = (dist_loss * (1 - goal_mask.float())).mean() / (1e-2 +(1 - goal_mask.float()).mean())
 
             # Sample noise to add to actions
@@ -666,22 +890,28 @@ def train_nomad(
             # Logging
             loss_cpu = loss.item()
             tepoch.set_postfix(loss=loss_cpu)
-            wandb.log({"total_loss": loss_cpu})
-            wandb.log({"dist_loss": dist_loss.item()})
-            wandb.log({"diffusion_loss": diffusion_loss.item()})
+            
+            if use_wandb:
+                wandb.log({"total_loss": loss_cpu})
+                wandb.log({"dist_loss": dist_loss.item()})
+                wandb.log({"diffusion_loss": diffusion_loss.item()})
 
 
             if i % print_log_freq == 0:
-                losses = _compute_losses_nomad(
-                            ema_model.averaged_model,
-                            noise_scheduler,
-                            batch_obs_images,
-                            batch_goal_images,
-                            distance.to(device),
-                            actions.to(device),
-                            device,
-                            action_mask.to(device),
-                        )
+                with torch.inference_mode():
+                    losses = _compute_losses_nomad(
+                                ema_model.averaged_model,
+                                noise_scheduler,
+                                batch_obs_images,
+                                batch_goal_images,
+                                distance.to(device),
+                                actions.to(device),
+                                device,
+                                action_mask.to(device),
+                                predict_velocity=predict_velocity,
+                                ACTION_STATS =ACTION_STATS,
+                                max_distance=max_distance
+                            )
                 
                 for key, value in losses.items():
                     if key in loggers:
@@ -696,27 +926,49 @@ def train_nomad(
 
                 if use_wandb and i % wandb_log_freq == 0 and wandb_log_freq != 0:
                     wandb.log(data_log, commit=True)
+            
 
             if image_log_freq != 0 and i % image_log_freq == 0:
-                visualize_diffusion_action_distribution(
-                    ema_model.averaged_model,
-                    noise_scheduler,
-                    batch_obs_images,
-                    batch_goal_images,
-                    batch_viz_obs_images,
-                    batch_viz_goal_images,
-                    actions,
-                    distance,
-                    goal_pos,
-                    device,
-                    "train",
-                    project_folder,
-                    epoch,
-                    num_images_log,
-                    30,
-                    use_wandb,
-                )
+                
+                with torch.inference_mode():
+                    records = visualize_diffusion_action_distribution(
+                        ema_model.averaged_model,
+                        noise_scheduler,
+                        batch_obs_images,
+                        batch_goal_images,
+                        batch_viz_obs_images,
+                        batch_viz_goal_images,
+                        actions,
+                        distance,
+                        goal_pos,
+                        device,
+                        "train",
+                        project_folder,
+                        epoch,
+                        num_images_log,
+                        30,
+                        use_wandb,
+                        predict_velocity,
+                        ACTION_STATS,
+                        global_step=i,
+                        ep_idx=ep_idx,
+                        curr_time=curr_time,
+                        episode_starts=dataloader.dataset.datasets[0].episode_starts, # TODO: 임시방편, concat 때문
+                        action_mask=action_mask.cpu(),
+                        dataset=dataloader.dataset.datasets[0], # TODO: 임시방편, concat 때문
+                        max_distance=max_distance
+                    )
 
+            # RAM monitor
+            # rss : 실제로 현재 점유 중인 RAM
+            if i % 100 == 0:
+                process = psutil.Process(os.getpid())
+
+                print(
+                    f"[RAM] "
+                    f"RSS={process.memory_info().rss / 1024**3:.2f} GB | "
+                    f"VMS={process.memory_info().vms / 1024**3:.2f} GB"
+                )
 
 def evaluate_nomad(
     eval_type: str,
@@ -732,8 +984,11 @@ def evaluate_nomad(
     wandb_log_freq: int = 10,
     image_log_freq: int = 1000,
     num_images_log: int = 8,
-    eval_fraction: float = 0.25,
+    eval_fraction: float = 1.0,
     use_wandb: bool = True,
+    predict_velocity = True,
+    ACTION_STATS =None,
+    max_distance= 400
 ):
     """
     Evaluate the model on the given evaluation dataset.
@@ -756,11 +1011,13 @@ def evaluate_nomad(
         use_wandb (bool): whether to use wandb for logging
     """
     goal_mask_prob = torch.clip(torch.tensor(goal_mask_prob), 0, 1)
+    
     ema_model = ema_model.averaged_model
     ema_model.eval()
     
     num_batches = len(dataloader)
 
+    # logger
     uc_action_loss_logger = Logger("uc_action_loss", eval_type, window_size=print_log_freq)
     uc_action_waypts_cos_sim_logger = Logger(
         "uc_action_waypts_cos_sim", eval_type, window_size=print_log_freq
@@ -778,149 +1035,247 @@ def evaluate_nomad(
     )
     loggers = {
         "uc_action_loss": uc_action_loss_logger,
-        "uc_action_waypts_cos_sim": uc_action_waypts_cos_sim_logger,
-        "uc_multi_action_waypts_cos_sim": uc_multi_action_waypts_cos_sim_logger,
+        #"uc_action_waypts_cos_sim": uc_action_waypts_cos_sim_logger,
+        #"uc_multi_action_waypts_cos_sim": uc_multi_action_waypts_cos_sim_logger,
         "gc_dist_loss": gc_dist_loss_logger,
         "gc_action_loss": gc_action_loss_logger,
-        "gc_action_waypts_cos_sim": gc_action_waypts_cos_sim_logger,
-        "gc_multi_action_waypts_cos_sim": gc_multi_action_waypts_cos_sim_logger,
+        #"gc_action_waypts_cos_sim": gc_action_waypts_cos_sim_logger,
+        #"gc_multi_action_waypts_cos_sim": gc_multi_action_waypts_cos_sim_logger,
     }
     num_batches = max(int(num_batches * eval_fraction), 1)
 
-    with tqdm.tqdm(
-        itertools.islice(dataloader, num_batches), 
-        total=num_batches, 
-        dynamic_ncols=True, 
-        desc=f"Evaluating {eval_type} for epoch {epoch}", 
-        leave=False) as tepoch:
-        for i, data in enumerate(tepoch):
-            (
-                obs_image, 
-                goal_image,
-                actions,
-                distance,
-                goal_pos,
-                dataset_idx,
-                action_mask,
-            ) = data
+
+    traj_error_records = []
+    
+    # 추론(inference)만 수행, 학습에 필요한 계산 기록을 수행하지 않음
+    with torch.inference_mode():
+        with tqdm.tqdm(
+            itertools.islice(dataloader, num_batches), 
+            total=num_batches, 
+            dynamic_ncols=True, 
+            desc=f"Evaluating {eval_type}", leave=False) as tepoch:
             
-            obs_images = torch.split(obs_image, 3, dim=1)
-            batch_viz_obs_images = TF.resize(obs_images[-1], VISUALIZATION_IMAGE_SIZE[::-1])
-            batch_viz_goal_images = TF.resize(goal_image, VISUALIZATION_IMAGE_SIZE[::-1])
-            batch_obs_images = [transform(obs) for obs in obs_images]
-            batch_obs_images = torch.cat(batch_obs_images, dim=1).to(device)
-            batch_goal_images = transform(goal_image).to(device)
-            action_mask = action_mask.to(device)
-
-            B = actions.shape[0]
-
-            # Generate random goal mask
-            rand_goal_mask = (torch.rand((B,)) < goal_mask_prob).long().to(device)
-            goal_mask = torch.ones_like(rand_goal_mask).long().to(device)
-            no_mask = torch.zeros_like(rand_goal_mask).long().to(device)
-
-            rand_mask_cond = ema_model("vision_encoder", obs_img=batch_obs_images, goal_img=batch_goal_images, input_goal_mask=rand_goal_mask)
-
-            obsgoal_cond = ema_model("vision_encoder", obs_img=batch_obs_images, goal_img=batch_goal_images, input_goal_mask=no_mask)
-            obsgoal_cond = obsgoal_cond.flatten(start_dim=1)
-
-            goal_mask_cond = ema_model("vision_encoder", obs_img=batch_obs_images, goal_img=batch_goal_images, input_goal_mask=goal_mask)
-
-            distance = distance.to(device)
-
-            deltas = get_delta(actions)
-            ndeltas = normalize_data(deltas, ACTION_STATS)
-            naction = from_numpy(ndeltas).to(device)
-            assert naction.shape[-1] == 2, "action dim must be 2"
-
-            # Sample noise to add to actions
-            noise = torch.randn(naction.shape, device=device)
-
-            # Sample a diffusion iteration for each data point
-            timesteps = torch.randint(
-                0, noise_scheduler.config.num_train_timesteps,
-                (B,), device=device
-            ).long()
-
-            noisy_actions = noise_scheduler.add_noise(
-                naction, noise, timesteps)
-
-            ### RANDOM MASK ERROR ###
-            # Predict the noise residual
-            rand_mask_noise_pred = ema_model("noise_pred_net", sample=noisy_actions, timestep=timesteps, global_cond=rand_mask_cond)
-            
-            # L2 loss
-            rand_mask_loss = nn.functional.mse_loss(rand_mask_noise_pred, noise)
-            
-            ### NO MASK ERROR ###
-            # Predict the noise residual
-            no_mask_noise_pred = ema_model("noise_pred_net", sample=noisy_actions, timestep=timesteps, global_cond=obsgoal_cond)
-            
-            # L2 loss
-            no_mask_loss = nn.functional.mse_loss(no_mask_noise_pred, noise)
-
-            ### GOAL MASK ERROR ###
-            # predict the noise residual
-            goal_mask_noise_pred = ema_model("noise_pred_net", sample=noisy_actions, timestep=timesteps, global_cond=goal_mask_cond)
-            
-            # L2 loss
-            goal_mask_loss = nn.functional.mse_loss(goal_mask_noise_pred, noise)
-            
-            # Logging
-            loss_cpu = rand_mask_loss.item()
-            tepoch.set_postfix(loss=loss_cpu)
-
-            wandb.log({"diffusion_eval_loss (random masking)": rand_mask_loss})
-            wandb.log({"diffusion_eval_loss (no masking)": no_mask_loss})
-            wandb.log({"diffusion_eval_loss (goal masking)": goal_mask_loss})
-
-            if i % print_log_freq == 0 and print_log_freq != 0:
-                losses = _compute_losses_nomad(
-                            ema_model,
-                            noise_scheduler,
-                            batch_obs_images,
-                            batch_goal_images,
-                            distance.to(device),
-                            actions.to(device),
-                            device,
-                            action_mask.to(device),
-                        )
-                
-                for key, value in losses.items():
-                    if key in loggers:
-                        logger = loggers[key]
-                        logger.log_data(value.item())
-            
-                data_log = {}
-                for key, logger in loggers.items():
-                    data_log[logger.full_name()] = logger.latest()
-                    if i % print_log_freq == 0 and print_log_freq != 0:
-                        print(f"(epoch {epoch}) (batch {i}/{num_batches - 1}) {logger.display()}")
-
-                if use_wandb and i % wandb_log_freq == 0 and wandb_log_freq != 0:
-                    wandb.log(data_log, commit=True)
-
-            if image_log_freq != 0 and i % image_log_freq == 0:
-                visualize_diffusion_action_distribution(
-                    ema_model,
-                    noise_scheduler,
-                    batch_obs_images,
-                    batch_goal_images,
-                    batch_viz_obs_images,
-                    batch_viz_goal_images,
+            for i, data in enumerate(tepoch):
+                (
+                    obs_image, 
+                    goal_image,
                     actions,
                     distance,
                     goal_pos,
-                    device,
-                    eval_type,
-                    project_folder,
-                    epoch,
-                    num_images_log,
-                    30,
-                    use_wandb,
-                )
+                    dataset_idx,
+                    action_mask,
+                    ep_idx,
+                    curr_time,
+                ) = data
+                
+                """
+                torch.as_tensor(obs_image, dtype=torch.float32),
+                torch.as_tensor(goal_image, dtype=torch.float32),
+                actions_torch,
+                torch.as_tensor(distance, dtype=torch.int64),
+                torch.as_tensor(goal_pos, dtype=torch.float32),
+                torch.as_tensor(self.dataset_index, dtype=torch.int64),
+                torch.as_tensor(action_mask, dtype=torch.float32),
+                torch.as_tensor(ep_idx, dtype=torch.int64),
+                torch.as_tensor(curr_time, dtype=torch.int64),   
+                """
 
+                obs_images = torch.split(obs_image, 3, dim=1)
+                batch_viz_obs_images = TF.resize(obs_images[-1], VISUALIZATION_IMAGE_SIZE[::-1])
+                batch_viz_goal_images = TF.resize(goal_image, VISUALIZATION_IMAGE_SIZE[::-1])
+                batch_obs_images = [transform(obs) for obs in obs_images]
+                batch_obs_images = torch.cat(batch_obs_images, dim=1).to(device)
+                batch_goal_images = transform(goal_image).to(device)
+                action_mask = action_mask.to(device)
 
+                B = actions.shape[0]
+
+                # Generate random goal mask
+                rand_goal_mask = (torch.rand((B,)) < goal_mask_prob).long().to(device)
+                goal_mask = torch.ones_like(rand_goal_mask).long().to(device)
+                no_mask = torch.zeros_like(rand_goal_mask).long().to(device)
+
+                rand_mask_cond = ema_model("vision_encoder", obs_img=batch_obs_images, goal_img=batch_goal_images, input_goal_mask=rand_goal_mask)
+
+                obsgoal_cond = ema_model("vision_encoder", obs_img=batch_obs_images, goal_img=batch_goal_images, input_goal_mask=no_mask)
+                obsgoal_cond = obsgoal_cond.flatten(start_dim=1)
+
+                goal_mask_cond = ema_model("vision_encoder", obs_img=batch_obs_images, goal_img=batch_goal_images, input_goal_mask=goal_mask)
+
+                distance = distance.to(device)
+                
+
+                ndiffusion_target = get_diffusion_target(actions, predict_velocity)
+                #ndiffusion_target = normalize_data(diffusion_target, ACTION_STATS)
+                
+                if isinstance(ndiffusion_target, torch.Tensor):
+                    naction = ndiffusion_target.float().to(device)
+                else:
+                    naction = from_numpy(ndiffusion_target).to(device)
+                
+                assert naction.shape[-1] == 2, "action dim must be 2"
+
+                # Sample noise to add to actions
+                noise = torch.randn(naction.shape, device=device)
+
+                # Sample a diffusion iteration for each data point
+                timesteps = torch.randint(
+                    0, noise_scheduler.config.num_train_timesteps,
+                    (B,), device=device
+                ).long()
+
+                noisy_actions = noise_scheduler.add_noise(
+                    naction, noise, timesteps)
+
+                ### RANDOM MASK ERROR ###
+                # Predict the noise residual
+                rand_mask_noise_pred = ema_model("noise_pred_net", sample=noisy_actions, timestep=timesteps, global_cond=rand_mask_cond)
+                
+                # L2 loss
+                rand_mask_loss = nn.functional.mse_loss(rand_mask_noise_pred, noise)
+                
+                ### NO MASK ERROR ###
+                # Predict the noise residual
+                no_mask_noise_pred = ema_model("noise_pred_net", sample=noisy_actions, timestep=timesteps, global_cond=obsgoal_cond)
+                
+                # L2 loss
+                no_mask_loss = nn.functional.mse_loss(no_mask_noise_pred, noise)
+
+                ### GOAL MASK ERROR ###
+                # predict the noise residual
+                goal_mask_noise_pred = ema_model("noise_pred_net", sample=noisy_actions, timestep=timesteps, global_cond=goal_mask_cond)
+                
+                # L2 loss
+                goal_mask_loss = nn.functional.mse_loss(goal_mask_noise_pred, noise)
+                
+                # Logging
+                loss_cpu = rand_mask_loss.item()
+                tepoch.set_postfix(loss=loss_cpu)
+                
+                if use_wandb:
+                    wandb.log({"diffusion_eval_loss (random masking)": rand_mask_loss})
+                    wandb.log({"diffusion_eval_loss (no masking)": no_mask_loss})
+                    wandb.log({"diffusion_eval_loss (goal masking)": goal_mask_loss})
+
+                
+                if i % print_log_freq == 0 and print_log_freq != 0:
+                    losses = _compute_losses_nomad(
+                                ema_model,
+                                noise_scheduler,
+                                batch_obs_images,
+                                batch_goal_images,
+                                distance.to(device),
+                                actions.to(device),
+                                device,
+                                action_mask.to(device),
+                                predict_velocity=predict_velocity,
+                                ACTION_STATS=ACTION_STATS,
+                                max_distance=max_distance
+                            )
+                    
+                    for key, value in losses.items():
+                        if key in loggers:
+                            logger = loggers[key]
+                            logger.log_data(value.item())
+                
+                    data_log = {}
+                    for key, logger in loggers.items():
+                        data_log[logger.full_name()] = logger.latest()
+                        if i % print_log_freq == 0 and print_log_freq != 0:
+                            print(f"(epoch {epoch}) (batch {i}/{num_batches - 1}) {logger.display()}")
+
+                    if use_wandb and i % wandb_log_freq == 0 and wandb_log_freq != 0:
+                        wandb.log(data_log, commit=True)
+
+                if image_log_freq != 0 and i % image_log_freq == 0:
+                    records = visualize_diffusion_action_distribution(
+                        ema_model,
+                        noise_scheduler,
+                        batch_obs_images,
+                        batch_goal_images,
+                        batch_viz_obs_images,
+                        batch_viz_goal_images,
+                        actions,
+                        distance,
+                        goal_pos,
+                        device,
+                        eval_type,
+                        project_folder,
+                        epoch,
+                        num_images_log,
+                        30,
+                        use_wandb,
+                        predict_velocity,
+                        ACTION_STATS,
+                        global_step=i,
+                        ep_idx=ep_idx,
+                        curr_time=curr_time,
+                        episode_starts=dataloader.dataset.episode_starts, # TODO: 임시방편
+                        action_mask=action_mask.cpu(),
+                        dataset=dataloader.dataset, # TODO: 임시방편
+                        max_distance=max_distance # TODO: 임시방편
+                    )
+                    traj_error_records.extend(records)
+    
+    if len(traj_error_records) > 0:
+        x = np.array([
+            r["time_sec"]
+            for r in traj_error_records
+        ])
+
+        uc_dist = np.array([r["uc_dist"] for r in traj_error_records])
+        gc_dist = np.array([r["gc_dist"] for r in traj_error_records])
+        uc_ang = np.array([r["uc_ang"] for r in traj_error_records])
+        gc_ang = np.array([r["gc_ang"] for r in traj_error_records])
+
+        save_dir = os.path.join(
+            project_folder,
+            f"visualize",
+            f"epoch{epoch}"
+        )
+
+        fig, ax = plt.subplots(1, 2, figsize=(14, 5))
+
+        ax[0].scatter(x,uc_dist,s=10,label=f"UC (mean={uc_dist.mean():.3f} m)",)
+        ax[0].scatter(x,gc_dist,s=10,label=f"GC (mean={gc_dist.mean():.3f} m)",)
+
+        ax[0].axhline(uc_dist.mean(),linestyle="--",alpha=0.7,)
+        ax[0].axhline(gc_dist.mean(),linestyle="--",color="orange",alpha=0.7,)
+
+        ax[0].set_title(f"Final position error | episode {traj_error_records[0]['episode']}")
+        ax[0].set_xlabel("time [s]")
+        ax[0].set_ylabel("distance error [m]")
+        ax[0].grid(True)
+        ax[0].legend(loc="upper right")
+
+        ax[1].scatter(x,uc_ang,s=10,label=f"UC (mean={uc_ang.mean():.2f}°)",)
+        ax[1].scatter(x,gc_ang,s=10,label=f"GC (mean={gc_ang.mean():.2f}°)",)
+
+        ax[1].axhline(uc_ang.mean(),linestyle="--",alpha=0.7,)
+        ax[1].axhline(gc_ang.mean(),linestyle="--",alpha=0.7,color="orange")
+
+        ax[1].set_title(f"Final heading error | episode_{traj_error_records[0]['episode']}")
+        ax[1].set_xlabel("time [s]")
+        ax[1].set_ylabel("heading error [deg]")
+        ax[1].grid(True)
+        ax[1].legend(loc="upper right")
+
+        fig.tight_layout()
+
+        save_path = os.path.join(
+            save_dir,
+            f"episode_{traj_error_records[0]['episode']}_traj_error_summary.png",
+        )
+
+        fig.savefig(save_path, dpi=150)
+        plt.close(fig)
+
+        if use_wandb:
+            wandb.log({
+                f"{eval_type}_traj_error_summary": wandb.Image(save_path)
+            }, commit=False)
+
+"""
 # normalize data
 def get_data_stats(data):
     data = data.reshape(-1,data.shape[-1])
@@ -936,11 +1291,13 @@ def normalize_data(data, stats):
     # normalize to [-1, 1]
     ndata = ndata * 2 - 1
     return ndata
+"""
 
 def unnormalize_data(ndata, stats):
     ndata = (ndata + 1) / 2
     data = ndata * (stats['max'] - stats['min']) + stats['min']
     return data
+
 
 def get_delta(actions):
     # append zeros to first action
@@ -948,17 +1305,31 @@ def get_delta(actions):
     delta = ex_actions[:,1:] - ex_actions[:,:-1]
     return delta
 
-def get_action(diffusion_output, action_stats=ACTION_STATS):
+def get_diffusion_target(actions, predict_velocity: bool = False):
+    
+    if predict_velocity:
+        return actions
+    else:
+        return get_delta(actions)
+
+def get_action(diffusion_output,ACTION_STATS=None,predict_velocity: bool = True):
     # diffusion_output: (B, 2*T+1, 1)
     # return: (B, T-1)
     device = diffusion_output.device
-    ndeltas = diffusion_output
-    ndeltas = ndeltas.reshape(ndeltas.shape[0], -1, 2)
-    ndeltas = to_numpy(ndeltas)
-    ndeltas = unnormalize_data(ndeltas, action_stats)
-    actions = np.cumsum(ndeltas, axis=1)
-    return from_numpy(actions).to(device)
 
+    nout = diffusion_output.reshape(diffusion_output.shape[0], -1, 2)
+    nout = to_numpy(nout)
+
+    if predict_velocity:
+        actions = nout
+    else:
+        out = unnormalize_data(
+            nout,
+            ACTION_STATS,
+        )
+        actions = np.cumsum(out, axis=1)
+
+    return from_numpy(actions).to(device)
 
 def model_output(
     model: nn.Module,
@@ -969,6 +1340,7 @@ def model_output(
     action_dim: int,
     num_samples: int,
     device: torch.device,
+    predict_velocity: bool = True,
 ):
     goal_mask = torch.ones((batch_goal_images.shape[0],)).long().to(device)
     obs_cond = model("vision_encoder", obs_img=batch_obs_images, goal_img=batch_goal_images, input_goal_mask=goal_mask)
@@ -1002,7 +1374,7 @@ def model_output(
             sample=diffusion_output
         ).prev_sample
 
-    uc_actions = get_action(diffusion_output, ACTION_STATS)
+    uc_actions = get_action(diffusion_output,predict_velocity)
 
     # initialize action from Gaussian noise
     noisy_diffusion_output = torch.randn(
@@ -1025,7 +1397,8 @@ def model_output(
             sample=diffusion_output
         ).prev_sample
     obsgoal_cond = obsgoal_cond.flatten(start_dim=1)
-    gc_actions = get_action(diffusion_output, ACTION_STATS)
+    
+    gc_actions = get_action(diffusion_output,predict_velocity)
     gc_distance = model("dist_pred_net", obsgoal_cond=obsgoal_cond)
 
     return {
@@ -1034,6 +1407,26 @@ def model_output(
         'gc_distance': gc_distance,
     }
 
+# RK4
+def reconstruct_pose_rk4(linear_vels, angular_vels, dt=0.0333, initial_pose=(0.0, 0.0, 0.0)):
+    n_steps = len(linear_vels)
+    trajectory = np.zeros((n_steps + 1, 3))
+    trajectory[0] = initial_pose
+
+    def f(q, v, w):
+        return np.array([v * np.cos(q[2]), v * np.sin(q[2]), w])
+
+    curr_q = np.array(initial_pose, dtype=float)
+    for i in range(n_steps):
+        v, w = linear_vels[i], angular_vels[i]
+        k1 = f(curr_q, v, w)
+        k2 = f(curr_q + 0.5 * dt * k1, v, w)
+        k3 = f(curr_q + 0.5 * dt * k2, v, w)
+        k4 = f(curr_q + dt * k3, v, w)
+        curr_q += (dt / 6.0) * (k1 + 2 * k2 + 2 * k3 + k4)
+        curr_q[2] = (curr_q[2] + np.pi) % (2 * np.pi) - np.pi
+        trajectory[i + 1] = curr_q
+    return trajectory
 
 def visualize_diffusion_action_distribution(
     ema_model: nn.Module,
@@ -1052,15 +1445,24 @@ def visualize_diffusion_action_distribution(
     num_images_log: int,
     num_samples: int = 30,
     use_wandb: bool = True,
+    predict_velocity= True,
+    ACTION_STATS = None,
+    global_step=None,
+    ep_idx=None,
+    curr_time=None,
+    episode_starts=None,
+    action_mask=None,
+    dataset=None,
+    max_distance = 400,
+    visualize_detail = False
 ):
     """Plot samples from the exploration model."""
 
     visualize_path = os.path.join(
         project_folder,
         "visualize",
-        eval_type,
         f"epoch{epoch}",
-        "action_sampling_prediction",
+        "prediction_detail",
     )
     if not os.path.isdir(visualize_path):
         os.makedirs(visualize_path)
@@ -1068,17 +1470,20 @@ def visualize_diffusion_action_distribution(
     max_batch_size = batch_obs_images.shape[0]
 
     num_images_log = min(num_images_log, batch_obs_images.shape[0], batch_goal_images.shape[0], batch_action_label.shape[0], batch_goal_pos.shape[0])
+    
     batch_obs_images = batch_obs_images[:num_images_log]
     batch_goal_images = batch_goal_images[:num_images_log]
     batch_action_label = batch_action_label[:num_images_log]
     batch_goal_pos = batch_goal_pos[:num_images_log]
     
     wandb_list = []
+    traj_error_records = []
 
     pred_horizon = batch_action_label.shape[1]
     action_dim = batch_action_label.shape[2]
 
     # split into batches
+    # torch.split(tensor, chunk_size, dim=0)
     batch_obs_images_list = torch.split(batch_obs_images, max_batch_size, dim=0)
     batch_goal_images_list = torch.split(batch_goal_images, max_batch_size, dim=0)
 
@@ -1087,6 +1492,7 @@ def visualize_diffusion_action_distribution(
     gc_distances_list = []
 
     for obs, goal in zip(batch_obs_images_list, batch_goal_images_list):
+        
         model_output_dict = model_output(
             ema_model,
             noise_scheduler,
@@ -1096,6 +1502,7 @@ def visualize_diffusion_action_distribution(
             action_dim,
             num_samples,
             device,
+            predict_velocity=predict_velocity
         )
         uc_actions_list.append(to_numpy(model_output_dict['uc_actions']))
         gc_actions_list.append(to_numpy(model_output_dict['gc_actions']))
@@ -1111,67 +1518,734 @@ def visualize_diffusion_action_distribution(
     gc_actions_list = np.split(gc_actions_list, num_images_log, axis=0)
     gc_distances_list = np.split(gc_distances_list, num_images_log, axis=0)
 
-    gc_distances_avg = [np.mean(dist) for dist in gc_distances_list]
-    gc_distances_std = [np.std(dist) for dist in gc_distances_list]
+    gc_distances_avg = [np.mean(dist)*max_distance for dist in gc_distances_list]
 
     assert len(uc_actions_list) == len(gc_actions_list) == num_images_log
 
     np_distance_labels = to_numpy(batch_distance_labels)
 
+    def unnormalize_action(data, ACTION_STATS):
+        if isinstance(data, torch.Tensor):
+
+            scale = torch.tensor(
+                ACTION_STATS["scale"],
+                device=data.device,
+                dtype=data.dtype,
+            )
+            min_val = torch.tensor(
+                ACTION_STATS["min"],
+                device=data.device,
+                dtype=data.dtype,
+            )
+        else:
+            scale = np.asarray(
+                ACTION_STATS["scale"],
+                dtype=np.float32,
+            )
+            min_val = np.asarray(
+                ACTION_STATS["min"],
+                dtype=np.float32,
+            )
+        return (
+            (data + 1.0)
+            / 2.0
+            * scale
+            + min_val
+        )
+
+    # predict_velocity의 경우 적분하여 경로 생성
+    def to_traj_from_velocity(action_seq, dt=0.0333):
+
+
+        traj = reconstruct_pose_rk4(
+            linear_vels=action_seq[:, 0],
+            angular_vels=action_seq[:, 1],
+            dt=dt,
+        )
+        return traj[:, :2]  # (T+1, 2)
+
+
     for i in range(num_images_log):
-        fig, ax = plt.subplots(1, 3)
+        
+        # ep_idx, curr_time는 batch tensor
+        sample_ep_idx = int(ep_idx[i])
+        sample_curr_time = int(curr_time[i])
+        ep_start = int(episode_starts[sample_ep_idx])
+        local_time = sample_curr_time - ep_start
+
         uc_actions = uc_actions_list[i]
         gc_actions = gc_actions_list[i]
         action_label = to_numpy(batch_action_label[i])
+        
+        # unnormalize
+        uc_actions = unnormalize_action(uc_actions, ACTION_STATS)
+        gc_actions = unnormalize_action(gc_actions, ACTION_STATS)
+        action_label = unnormalize_action(action_label, ACTION_STATS)
 
-        traj_list = np.concatenate([
-            uc_actions,
-            gc_actions,
-            action_label[None],
-        ], axis=0)
-        # traj_labels = ["r", "GC", "GC_mean", "GT"]
-        traj_colors = ["red"] * len(uc_actions) + ["green"] * len(gc_actions) + ["magenta"]
-        traj_alphas = [0.1] * (len(uc_actions) + len(gc_actions)) + [1.0]
+        uc_actions_raw = uc_actions.copy()
+        gc_actions_raw = gc_actions.copy()
+        action_label_raw = action_label.copy()
 
-        # make points numpy array of robot positions (0, 0) and goal positions
-        point_list = [np.array([0, 0]), to_numpy(batch_goal_pos[i])]
-        point_colors = ["green", "red"]
-        point_alphas = [1.0, 1.0]
+        # total prediction length
+        total_len = action_label.shape[0]
 
+        sample_action_mask = bool(action_mask[i].item())
+
+        if predict_velocity:
+            uc_actions = np.stack([
+                to_traj_from_velocity(a, dt=0.0333)
+                for a in uc_actions
+            ], axis=0)
+
+            gc_actions = np.stack([
+                to_traj_from_velocity(a, dt=0.0333)
+                for a in gc_actions
+            ], axis=0)
+
+            action_label = to_traj_from_velocity(action_label, dt=0.0333)
+
+            # Ground Truth distance
+            gt_dist = int(np_distance_labels[i])
+
+            if dataset is not None:
+                ep_end = int(dataset.episode_ends[sample_ep_idx])
+
+                long_end = min(
+                    sample_curr_time + gt_dist,
+                    ep_end,
+                )
+
+                action_label_long_raw = dataset.actions[
+                    sample_curr_time:long_end
+                ].astype(np.float32)
+
+                action_label_long = to_traj_from_velocity(
+                    action_label_long_raw,
+                    dt=0.0333,
+                )
+            else:
+                action_label_long_raw = action_label_raw
+                action_label_long = action_label
+
+            gt_max_len = min(gt_dist + 1, action_label.shape[0])
+
+            # truncate separately
+            uc_actions = uc_actions[:, :gt_max_len]
+            gc_actions = gc_actions[:, :gt_max_len]
+            action_label = action_label[:gt_max_len]
+            
+        else:
+            uc_actions = uc_actions
+            gc_actions = gc_actions
+            action_label = action_label
+
+        if visualize_detail:
+
+            fig, ax = plt.subplots(1, 3)
+            goal_pos_vis = action_label_long[-1]
+
+            # action_label[None] : Add a batch dimension at the front
+            traj_list = (
+                list(uc_actions)
+                + list(gc_actions)
+                + [action_label_long]
+            )
+
+            # traj_labels = ["r", "GC", "GC_mean", "GT"]
+            traj_colors = ["red"] * len(uc_actions) + ["green"] * len(gc_actions) + ["magenta"]
+            traj_alphas = [0.1] * (len(uc_actions) + len(gc_actions)) + [1.0]
+
+            # make points numpy array of robot positions (0, 0) and goal positions
+            point_list = [np.array([0, 0]), goal_pos_vis]
+
+            point_colors = ["blue", "orange"]
+            point_alphas = [1.0, 1.0]
+            
+            plot_trajs_and_points(
+                ax[0],
+                traj_list,
+                point_list,
+                traj_colors,
+                point_colors,
+                traj_labels=None,
+                point_labels=None,
+                quiver_freq=0,
+                traj_alphas=traj_alphas,
+                point_alphas=point_alphas, 
+            )
+            
+            obs_image = to_numpy(batch_viz_obs_images[i])
+            goal_image = to_numpy(batch_viz_goal_images[i])
+
+            # move channel to last dimension
+            obs_image = np.moveaxis(obs_image, 0, -1)
+            goal_image = np.moveaxis(goal_image, 0, -1)
+            ax[1].imshow(obs_image)
+            ax[2].imshow(goal_image)
+
+            # set title
+            ax[0].set_title(
+                f"diffusion action predictions\n"
+                f"epi={sample_ep_idx}  "
+                f"local={local_time}  "
+                f"({local_time*0.0333:.2f}s)  "
+                f"{'TRAIN' if sample_action_mask else 'SKIP'}",
+            )
+
+            ax[1].set_title(f"observation")
+
+            dist_label = int(np_distance_labels[i])
+            neg_text = " [NEGATIVE]" if dist_label == total_len else ""
+
+            ax[2].set_title(
+                f"goal: label={dist_label} ({dist_label*0.0333:.2f}s) {neg_text} "
+                f"gc_dist={gc_distances_avg[i]:.2f} ({gc_distances_avg[i]*0.0333:.2f}s)"
+            )
+
+            # make the plot large
+            fig.set_size_inches(18.5, 10.5)
+
+            if global_step is None:
+                save_name = f"sample_{i}.png"
+            else:
+                save_name = f"step{global_step}_sample_{i}.png"
+
+            save_path = os.path.join(visualize_path, save_name)
+            plt.savefig(save_path)
+
+            if use_wandb:
+                wandb_list.append(wandb.Image(save_path))
+            
+            plt.close(fig)
+            del fig
+            gc.collect()
+
+        # =================================================================================
+
+        def add_final_distance_heading_arrow(ax, gt_traj, pred_traj, ang_err, offset=0.03):
+
+            gt_end = gt_traj[-1, :2]
+            pred_end = pred_traj[-1, :2]
+
+            vec = pred_end - gt_end
+            dist = np.linalg.norm(vec)
+
+            if dist < 1e-8:
+                return
+
+            # 거리선이 trajectory와 겹치지 않도록 수직 방향으로 살짝 이동
+            perp = np.array([-vec[1], vec[0]]) / dist
+
+            xlim = ax.get_xlim()
+            ylim = ax.get_ylim()
+
+            plot_scale = max(
+                xlim[1] - xlim[0],
+                ylim[1] - ylim[0],
+            )
+
+            offset_dist = offset * plot_scale
+
+            p1 = gt_end + offset_dist * perp
+            p2 = pred_end + offset_dist * perp
+
+            # 양방향 화살표
+            ax.annotate("",xy=p2,xytext=p1,arrowprops=dict(arrowstyle="<->",color="black",lw=1.3,alpha=0.75,),)
+
+            # 끝점에서 거리선까지 보조 점선
+            ax.plot([gt_end[0], p1[0]],[gt_end[1], p1[1]],linestyle=":",color="black",alpha=0.45,linewidth=1.0,)
+
+            ax.plot([pred_end[0], p2[0]],[pred_end[1], p2[1]],linestyle=":",color="black",alpha=0.45,linewidth=1.0,)
+
+            # 거리 텍스트
+            mid = (p1 + p2) / 2
+
+            ax.text(mid[0],mid[1],f"{dist:.3f} m\nΔθ={abs(ang_err):.1f}°",ha="center",va="bottom",fontsize=10,bbox=dict(facecolor="white",edgecolor="none",alpha=0.85,),)
+
+        def set_axis_from_reference(ax, gt_traj, mean_traj, margin=0.1):
+
+            ref = np.concatenate([
+                gt_traj[:, :2],
+                mean_traj[:, :2],
+            ], axis=0)
+
+            xmin, xmax = ref[:, 0].min(), ref[:, 0].max()
+            ymin, ymax = ref[:, 1].min(), ref[:, 1].max()
+
+            size = max(xmax - xmin, ymax - ymin)
+
+            cx = (xmin + xmax) / 2
+            cy = (ymin + ymax) / 2
+
+            half = size / 2 * (1 + margin)
+
+            ax.set_xlim(cx - half, cx + half)
+            ax.set_ylim(cy - half, cy + half)
+
+        def add_velocity_arrows(ax, gt, mean):
+            # --------------------------
+            # 1. GT max-min
+            # --------------------------
+            idx_max = np.argmax(gt)
+            idx_min = np.argmin(gt)
+
+            x_range = idx_max
+
+            gt_range = gt[idx_max] - gt[idx_min]
+
+            ax.annotate(
+                "",
+                xy=(x_range, gt[idx_max]),
+                xytext=(x_range, gt[idx_min]),
+                arrowprops=dict(
+                    arrowstyle="<->",
+                    color="blue",
+                    lw=1.5,
+                ),
+            )
+
+            ax.text(
+                x_range,
+                (gt[idx_max] + gt[idx_min]) / 2,
+                f"range\n{gt_range:.4f}",
+                color="blue",
+                ha="left",
+                va="center",
+                fontsize=9,
+                bbox=dict(facecolor="white", alpha=0.8),
+            )
+
+            # --------------------------
+            # 2. max |mean-GT|
+            # --------------------------
+            diff = np.abs(mean - gt)
+            idx_diff = np.argmax(diff)
+
+            y_gt = gt[idx_diff]
+            y_mean = mean[idx_diff]
+
+            ax.annotate(
+                "",
+                xy=(idx_diff, y_gt),
+                xytext=(idx_diff, y_mean),
+                arrowprops=dict(
+                    arrowstyle="<->",
+                    color="red",
+                    lw=1.5,
+                ),
+            )
+
+            ax.text(
+                idx_diff,
+                (y_gt + y_mean) / 2,
+                f"err\n{diff[idx_diff]:.4f}",
+                color="red",
+                ha="right",
+                va="center",
+                fontsize=9,
+                bbox=dict(facecolor="white", alpha=0.8),
+            )
+
+        # GT는 plot에서 끝까지 표시하되,
+        # error/velocity 비교는 pred horizon 안에서만 수행
+        # raw가 원래는 velocity, 아닌 경우 trajectory
+
+        pred_action_len = action_label_raw.shape[0]
+
+        # velocity
+        eval_action_len = min(gt_dist, pred_action_len)
+        # trajectory
+        eval_traj_len = eval_action_len + 1
+
+        # velocity eval
+        uc_actions_raw_eval = uc_actions_raw[:, :eval_action_len]
+        gc_actions_raw_eval = gc_actions_raw[:, :eval_action_len]
+        action_label_raw_eval = action_label_raw[:eval_action_len]
+
+        # trajectory eval
+        uc_actions_eval = uc_actions[:, :eval_traj_len]
+        gc_actions_eval = gc_actions[:, :eval_traj_len]
+        action_label_eval = action_label[:eval_traj_len]
+
+        uc_mean_linear  = uc_actions_raw_eval[:, :, 0].mean(0)
+        gc_mean_linear  = gc_actions_raw_eval[:, :, 0].mean(0)
+
+        uc_mean_angular = uc_actions_raw_eval[:, :, 1].mean(0)
+        gc_mean_angular = gc_actions_raw_eval[:, :, 1].mean(0)
+
+        uc_traj_mean = uc_actions_eval.mean(0)
+        gc_traj_mean = gc_actions_eval.mean(0)
+
+        # velocity plot은 GT long 전체를 그림
+        action_label_raw_plot = action_label_long_raw
+
+        # pred는 존재하는 만큼만 그림
+        uc_actions_raw_plot = uc_actions_raw
+        gc_actions_raw_plot = gc_actions_raw
+
+        def compute_final_dist_heading_error_from_velocity(
+            gt_traj,
+            pred_traj,
+            gt_action_raw,
+            pred_action_raw,
+            dt=0.0333,
+        ):
+            # position error는 trajectory 최종 위치 기준
+            gt_end = gt_traj[-1, :2]
+            pred_end = pred_traj[-1, :2]
+            dist_err = np.linalg.norm(pred_end - gt_end)
+
+            # heading error는 angular velocity 적분 기준
+            gt_theta = np.sum(gt_action_raw[:, 1]) * dt
+            pred_theta = np.sum(pred_action_raw[:, 1]) * dt
+
+            dtheta = np.arctan2(
+                np.sin(pred_theta - gt_theta),
+                np.cos(pred_theta - gt_theta),
+            )
+
+            ang_err_deg = abs(np.degrees(dtheta))
+
+            return dist_err, ang_err_deg
+
+        uc_mean_raw = np.stack(
+            [uc_mean_linear, uc_mean_angular],
+            axis=1,
+        )
+
+        gc_mean_raw = np.stack(
+            [gc_mean_linear, gc_mean_angular],
+            axis=1,
+        )
+
+        uc_dist_err, uc_ang_err = compute_final_dist_heading_error_from_velocity(
+            action_label_eval,
+            uc_traj_mean,
+            action_label_raw_eval,
+            uc_mean_raw,
+            dt=0.0333,
+        )
+
+        gc_dist_err, gc_ang_err = compute_final_dist_heading_error_from_velocity(
+            action_label_eval,
+            gc_traj_mean,
+            action_label_raw_eval,
+            gc_mean_raw,
+            dt=0.0333,
+        )
+
+        traj_error_records.append({
+            "episode": sample_ep_idx,
+            "local_time": local_time,
+            "time_sec": local_time * 0.0333,
+            "uc_dist": uc_dist_err,
+            "uc_ang": abs(uc_ang_err),
+            "gc_dist": gc_dist_err,
+            "gc_ang": abs(gc_ang_err),
+        })
+
+        if not visualize_detail:
+            continue
+
+        # ==================================================
+        # 추가 상세 plot 저장: 6개 subplot
+        # ==================================================
+        detail_fig, detail_ax = plt.subplots(2, 3, figsize=(20, 11))
+        detail_ax = detail_ax.flatten()
+
+        detail_fig.suptitle(
+            f"epi={sample_ep_idx} | "
+            f"local={local_time} ({local_time*0.0333:.2f}s)| "
+            f"{'TRAIN' if sample_action_mask else 'SKIP'}",
+            fontsize=14
+        )
+        
+        # 1) GT trajectory + all UC trajectories
         plot_trajs_and_points(
-            ax[0],
-            traj_list,
+            detail_ax[0],
+            [action_label_long] + list(uc_actions),
             point_list,
-            traj_colors,
+            ["magenta"] + ["red"] * len(uc_actions),
             point_colors,
             traj_labels=None,
             point_labels=None,
             quiver_freq=0,
-            traj_alphas=traj_alphas,
-            point_alphas=point_alphas, 
+            traj_alphas=[1.0] + [0.15] * len(uc_actions),
+            point_alphas=point_alphas,
+        )
+        detail_ax[0].plot(
+            uc_traj_mean[:, 0],
+            uc_traj_mean[:, 1],
+            color="red",
+            linewidth=3,
+            label="UC mean",
+        )
+
+        set_axis_from_reference(
+            detail_ax[0],
+            action_label_long,
+            uc_traj_mean,
+        )
+   
+        add_final_distance_heading_arrow(
+            detail_ax[0],
+            action_label_eval,
+            uc_traj_mean,
+            uc_ang_err,
+            offset=0.03,
+        )
+
+        detail_ax[0].set_title("GT + all UC traj")
+
+
+        # 2) GT trajectory + all GC trajectories
+        plot_trajs_and_points(
+            detail_ax[1],
+            [action_label_long] + list(gc_actions),
+            point_list,
+            ["magenta"] + ["green"] * len(gc_actions),
+            point_colors,
+            traj_labels=None,
+            point_labels=None,
+            quiver_freq=0,
+            traj_alphas=[1.0] + [0.15] * len(gc_actions),
+            point_alphas=point_alphas,
+        )
+
+        detail_ax[1].plot(
+            gc_traj_mean[:, 0],
+            gc_traj_mean[:, 1],
+            color="green",
+            linewidth=3,
+            label="GC mean",
+        )
+
+        set_axis_from_reference(
+            detail_ax[1],
+            action_label_long,
+            gc_traj_mean,
+        )
+
+        add_final_distance_heading_arrow(
+            detail_ax[1],
+            action_label_eval,
+            gc_traj_mean,
+            gc_ang_err,
+            offset=0.03,
         )
         
-        obs_image = to_numpy(batch_viz_obs_images[i])
-        goal_image = to_numpy(batch_viz_goal_images[i])
-        # move channel to last dimension
-        obs_image = np.moveaxis(obs_image, 0, -1)
-        goal_image = np.moveaxis(goal_image, 0, -1)
-        ax[1].imshow(obs_image)
-        ax[2].imshow(goal_image)
+        detail_ax[1].set_title("GT + all GC traj")
 
-        # set title
-        ax[0].set_title(f"diffusion action predictions")
-        ax[1].set_title(f"observation")
-        ax[2].set_title(f"goal: label={np_distance_labels[i]} gc_dist={gc_distances_avg[i]:.2f}±{gc_distances_std[i]:.2f}")
-        
-        # make the plot large
-        fig.set_size_inches(18.5, 10.5)
+        t_gt = np.arange(action_label_raw_plot.shape[0])
+        t_pred = np.arange(uc_actions_raw_plot.shape[1])
 
-        save_path = os.path.join(visualize_path, f"sample_{i}.png")
-        plt.savefig(save_path)
-        wandb_list.append(wandb.Image(save_path))
-        plt.close(fig)
+        # 3) GT linear velocity + all UC linear velocities
+        detail_ax[2].plot(
+            t_gt,
+            action_label_raw_plot[:, 0],
+            label="GT linear",
+            linewidth=2.5,
+        )
+
+        for k in range(len(uc_actions_raw_plot)):
+            detail_ax[2].plot(
+                t_pred,
+                uc_actions_raw_plot[k, :, 0],
+                color="red",
+                alpha=0.15,
+                linewidth=1.0,
+            )
+
+        detail_ax[2].plot(
+            t_pred,
+            uc_actions_raw_plot[:, :, 0].mean(0),
+            color="red",
+            linewidth=3,
+            label="UC mean",
+        )
+
+        add_velocity_arrows(
+            detail_ax[2],
+            action_label_raw_eval[:, 0],
+            uc_mean_linear,
+        )
+
+        detail_ax[2].set_title("GT + all UC linear vel")
+        detail_ax[2].set_xlabel("timestep (x0.03s)")
+        detail_ax[2].set_ylabel("linear vel")
+        detail_ax[2].legend(loc="upper right")
+        detail_ax[2].grid(True)
+
+        detail_ax[2].axhline(
+            0.0,
+            color="black",
+            linestyle="--",
+            linewidth=0.8,
+            alpha=0.3,
+        )
+
+        # 4) GT linear velocity + all GC linear velocities
+        detail_ax[3].plot(
+            t_gt,
+            action_label_raw_plot[:, 0],
+            label="GT linear",
+            linewidth=2.5,
+        )
+
+        for k in range(len(gc_actions_raw_plot)):
+            detail_ax[3].plot(
+                t_pred,
+                gc_actions_raw_plot[k, :, 0],
+                color="green",
+                alpha=0.15,
+                linewidth=1.0,
+            )
+
+        detail_ax[3].plot(
+            t_pred,
+            gc_actions_raw_plot[:, :, 0].mean(0),
+            color="green",
+            linewidth=3,
+            label="GC mean",
+        )
+
+        add_velocity_arrows(
+            detail_ax[3],
+            action_label_raw_eval[:, 0],
+            gc_mean_linear,
+        )
+
+        detail_ax[3].set_title("GT + all GC linear vel")
+        detail_ax[3].set_xlabel("timestep (x0.03s)")
+        detail_ax[3].set_ylabel("linear vel")
+        detail_ax[3].legend(loc="upper right")
+        detail_ax[3].grid(True)
+
+        detail_ax[3].axhline(
+            0.0,
+            color="black",
+            linestyle="--",
+            linewidth=0.8,
+            alpha=0.3,
+        )
+
+        # 5) GT angular velocity + all UC angular velocities
+        detail_ax[4].plot(
+            t_gt,
+            action_label_raw_plot[:, 1],
+            label="GT angular",
+            linewidth=2.5,
+        )
+
+        for k in range(len(uc_actions_raw_plot)):
+            detail_ax[4].plot(
+                t_pred,
+                uc_actions_raw_plot[k, :, 1],
+                color="red",
+                alpha=0.15,
+                linewidth=1.0,
+            )
+
+        detail_ax[4].plot(
+            t_pred,
+            uc_actions_raw_plot[:, :, 1].mean(0),
+            color="red",
+            linewidth=3,
+            label="UC mean",
+        )
+
+        add_velocity_arrows(
+            detail_ax[4],
+            action_label_raw_eval[:, 1],
+            uc_mean_angular,
+        )
+
+        detail_ax[4].set_title("GT + all UC angular vel")
+        detail_ax[4].set_xlabel("timestep (x0.03s)")
+        detail_ax[4].set_ylabel("angular vel")
+        detail_ax[4].legend(loc="upper right")
+        detail_ax[4].grid(True)
+
+        detail_ax[4].axhline(
+            0.0,
+            color="black",
+            linestyle="--",
+            linewidth=0.8,
+            alpha=0.3,
+        )
+
+        # 6) GT angular velocity + all GC angular velocities
+        detail_ax[5].plot(
+            t_gt,
+            action_label_raw_plot[:, 1],
+            label="GT angular",
+            linewidth=2.5,
+        )
+
+        for k in range(len(gc_actions_raw_plot)):
+            detail_ax[5].plot(
+                t_pred,
+                gc_actions_raw_plot[k, :, 1],
+                color="green",
+                alpha=0.15,
+                linewidth=1.0,
+            )
+
+        detail_ax[5].plot(
+            t_pred,
+            gc_actions_raw_plot[:, :, 1].mean(0),
+            color="green",
+            linewidth=3,
+            label="GC mean",
+        )
+
+        add_velocity_arrows(
+            detail_ax[5],
+            action_label_raw_eval[:, 1],
+            gc_mean_angular,
+        )
+
+        detail_ax[5].set_title("GT + all GC angular vel")
+        detail_ax[5].set_xlabel("timestep (x0.03s)")
+        detail_ax[5].set_ylabel("angular vel")
+        detail_ax[5].legend(loc="upper right")
+        detail_ax[5].grid(True)
+
+        detail_ax[5].axhline(
+            0.0,
+            color="black",
+            linestyle="--",
+            linewidth=0.8,
+            alpha=0.3,
+        )
+
+        detail_fig.tight_layout(rect=[0, 0, 1, 0.96])
+
+        detail_save_name = f"step{global_step}_sample_{i}_detail.png"
+        detail_save_path = os.path.join(visualize_path, detail_save_name)
+        detail_fig.savefig(detail_save_path)
+
+        if use_wandb:
+            wandb_list.append(wandb.Image(detail_save_path))
+            
+        plt.close(detail_fig)
+        del detail_fig
+        gc.collect()
+
+
     if len(wandb_list) > 0 and use_wandb:
         wandb.log({f"{eval_type}_action_samples": wandb_list}, commit=False)
 
+    if visualize_detail:
+        plt.close("all")
 
+        del uc_actions_list
+        del gc_actions_list
+        del gc_distances_list
+        del wandb_list
+        del action_label_long_raw
+        del action_label_long
+
+        gc.collect()
+
+    return traj_error_records

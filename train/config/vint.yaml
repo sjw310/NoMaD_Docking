@@ -2,17 +2,17 @@ project_name: vint-release
 run_name: vint-5c
 
 # training setup
-use_wandb: True # set to false if you don't want to log to wandb
+use_wandb: False # set to false if you don't want to log to wandb
 train: True
-batch_size: 256
+batch_size: 8
 epochs: 100
-gpu_ids: [0]
-num_workers: 12
+gpu_ids: [0] # 다중 GPU면 gpu_ids: [0,1]
+num_workers: 1
 lr: 5e-4
 optimizer: adamw
 clipping: False
 max_norm: 1.
-scheduler: "cosine"
+scheduler: "cosine" # lr scheduler
 warmup: True 
 warmup_epochs: 4
 cyclic_period: 10
@@ -32,66 +32,86 @@ late_fusion: False
 # normalization for the action space
 normalize: True
 
+predict_velocity : True
+
 # context
 context_type: temporal
-context_size: 5
+context_size: 5 # 현재 시점을 포함해서 몇 개의 과거 observation(프레임)을 모델 입력으로 사용할지
+
 # tradeoff between action and distance prediction loss
-alpha: 0.5
+alpha: 0.5 
 
 # distance bounds for distance and action and distance predictions 
+# 현재 시점 o_t에서 미래 시점 o_t+d까지의 거리를 예측할 때:
 distance:
   min_dist_cat: 0
   max_dist_cat: 20
 action:
   min_dist_cat: 0
   max_dist_cat: 10
-close_far_threshold: 10 # distance threshold used to seperate the close and the far  subgoals that are sampled per datapoint
+# subgoal sampling 시 가까운 목표 / 먼 목표를 나누는 기준
+close_far_threshold: 10 # distance threshold used to seperate the close and the far subgoals that are sampled per datapoint
 
 # action output params
 len_traj_pred: 5
-learn_angle: True
+learn_angle: False # whether to learn the angle or not
 
 # dataset specific parameters
-image_size: [85, 64] # width, height
+image_size: [320, 240] # width, height
 goal_type: "image"
 
 datasets:
-  recon:
-    data_folder: /home/<username>/vint_dataset/recon
-    train: /home/<username>/data_splits/recon/train/ # path to train folder with traj_names.txt
-    test: /home/<username>/data_splits/recon/test/ # path to test folder with traj_names.txt
-    end_slack: 3 # because many trajectories end in collisions
-    goals_per_obs: 1 # how many goals are sampled per observation
-    negative_mining: True # negative mining from the ViNG paper (Shah et al.)
-  go_stanford:
-    data_folder: /home/<username>/vint_dataset/go_stanford_cropped # datasets/stanford_go_new
-    train: /home/<username>/data_splits/go_stanford/train/
-    test: /home/<username>/data_splits/go_stanford/test/
-    end_slack: 0
-    goals_per_obs: 2 # increase dataset size
-    negative_mining: True
-  cory_hall:
-    data_folder: /home/<username>/vint_dataset/cory_hall/
-    train: /home/<username>/data_splits/cory_hall/train/
-    test: /home/<username>/data_splits/cory_hall/test/
-    end_slack: 3 # because many trajectories end in collisions
-    goals_per_obs: 1
-    negative_mining: True
-  tartan_drive:
-    data_folder: /home/<username>/vint_dataset/tartan_drive/
-    train: /home/<username>/data_splits/tartan_drive/train/
-    test: /home/<username>/data_splits/tartan_drive/test/
-    end_slack: 3 # because many trajectories end in collisions
-    goals_per_obs: 1
-    negative_mining: True
-  sacson:
-    data_folder: /home/<username>/vint_dataset/sacson/
-    train: /home/<username>/data_splits/sacson/train/
-    test: /home/<username>/data_splits/sacson/test/
-    end_slack: 3 # because many trajectories end in collisions
-    goals_per_obs: 1
-    negative_mining: True
+  my_h5_dataset:
+    format: h5
+    h5_path: "/home/sjw00310/Desktop/diffusion_policy_robot_docking/dataset/h5_dataset/train_episode_postech_260330.h5"
 
+    image_key: "image_bottom"
+    action_key: "encoder"
+
+    test_ratio: 0.2
+
+    waypoint_spacing: 6 # waypoint 몇 step 간격으로 사용할지
+    end_slack: 0 # trajectory 끝부분을 얼마나 버릴지
+    negative_mining: False # negative sample(틀린 goal)을 사용할지 여부
+    goals_per_obs: 1 # observation 하나당 몇 개 goal 샘플 생성할지
+
+
+  # recon:
+  #   data_folder: /home/<username>/vint_dataset/recon
+  #   train: /home/<username>/data_splits/recon/train/ # path to train folder with traj_names.txt
+  #   test: /home/<username>/data_splits/recon/test/ # path to test folder with traj_names.txt
+  #   end_slack: 3 # because many trajectories end in collisions
+  #   goals_per_obs: 1 # how many goals are sampled per observation
+  #   negative_mining: True # negative mining from the ViNG paper (Shah et al.)
+  # go_stanford:
+  #   data_folder: /home/<username>/vint_dataset/go_stanford_cropped # datasets/stanford_go_new
+  #   train: /home/<username>/data_splits/go_stanford/train/
+  #   test: /home/<username>/data_splits/go_stanford/test/
+  #   end_slack: 0
+  #   goals_per_obs: 2 # increase dataset size
+  #   negative_mining: True
+  # cory_hall:
+  #   data_folder: /home/<username>/vint_dataset/cory_hall/
+  #   train: /home/<username>/data_splits/cory_hall/train/
+  #   test: /home/<username>/data_splits/cory_hall/test/
+  #   end_slack: 3 # because many trajectories end in collisions
+  #   goals_per_obs: 1
+  #   negative_mining: True
+  # tartan_drive:
+  #   data_folder: /home/<username>/vint_dataset/tartan_drive/
+  #   train: /home/<username>/data_splits/tartan_drive/train/
+  #   test: /home/<username>/data_splits/tartan_drive/test/
+  #   end_slack: 3 # because many trajectories end in collisions
+  #   goals_per_obs: 1
+  #   negative_mining: True
+  # sacson:
+  #   data_folder: /home/<username>/vint_dataset/sacson/
+  #   train: /home/<username>/data_splits/sacson/train/
+  #   test: /home/<username>/data_splits/sacson/test/
+  #   end_slack: 3 # because many trajectories end in collisions
+  #   goals_per_obs: 1
+  #   negative_mining: True
+  
   # private datasets (uncomment if you have access)
   # seattle:
   #   data_folder: /home/<username>/vint_dataset/seattle/
@@ -110,10 +130,12 @@ datasets:
 
 # logging stuff
 ## =0 turns off
-print_log_freq: 100 # in iterations
-image_log_freq: 1000 #0 # in iterations
-num_images_log: 8 #0 
-pairwise_test_freq: 0 # in epochs
-eval_fraction: 0.25
+# in iterations → batch 기준
+# in epochs → epoch 기준
+print_log_freq: 100 # in iterations # frequency of printing to console
+image_log_freq: 0 #0 # in iterations # frequency of logging images to wandb
+num_images_log: 0 #0  # number of images to log to wandb
+pairwise_test_freq: 0 # in epochs 
+eval_fraction: 0.25 # fraction of training data to use for evaluation
 wandb_log_freq: 10 # in iterations
 eval_freq: 1 # in epochs

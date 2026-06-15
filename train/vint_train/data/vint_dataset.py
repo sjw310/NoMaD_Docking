@@ -351,6 +351,7 @@ class ViNT_Dataset(Dataset):
             (not goal_is_negative)
         )
 
+
         return (
             torch.as_tensor(obs_image, dtype=torch.float32),
             torch.as_tensor(goal_image, dtype=torch.float32),

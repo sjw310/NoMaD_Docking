@@ -8,11 +8,18 @@ class PositionalEncoding(nn.Module):
         super().__init__()
 
         # Compute the positional encoding once
-        pos_enc = torch.zeros(max_seq_len, d_model)
-        pos = torch.arange(0, max_seq_len, dtype=torch.float).unsqueeze(1)
+        pos_enc = torch.zeros(max_seq_len, d_model) # 6x512
+        pos = torch.arange(0, max_seq_len, dtype=torch.float).unsqueeze(1) # (6,1)
+
+        # 차원마다 다른 주파수 생성
         div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+        
+        # 짝수
         pos_enc[:, 0::2] = torch.sin(pos * div_term)
+        
+        # 홀수
         pos_enc[:, 1::2] = torch.cos(pos * div_term)
+        # 배치 차원 추가
         pos_enc = pos_enc.unsqueeze(0)
 
         # Register the positional encoding as a buffer to avoid it being
@@ -27,10 +34,16 @@ class PositionalEncoding(nn.Module):
 class MultiLayerDecoder(nn.Module):
     def __init__(self, embed_dim=512, seq_len=6, output_layers=[256, 128, 64], nhead=8, num_layers=8, ff_dim_factor=4):
         super(MultiLayerDecoder, self).__init__()
+
         self.positional_encoding = PositionalEncoding(embed_dim, max_seq_len=seq_len)
+        # block 하나 생성
+        # nhead : multihead, LN -> Attention
+        # ff : feed forward
         self.sa_layer = nn.TransformerEncoderLayer(d_model=embed_dim, nhead=nhead, dim_feedforward=ff_dim_factor*embed_dim, activation="gelu", batch_first=True, norm_first=True)
+        # layers
         self.sa_decoder = nn.TransformerEncoder(self.sa_layer, num_layers=num_layers)
         self.output_layers = nn.ModuleList([nn.Linear(seq_len*embed_dim, embed_dim)])
+
         self.output_layers.append(nn.Linear(embed_dim, output_layers[0]))
         for i in range(len(output_layers)-1):
             self.output_layers.append(nn.Linear(output_layers[i], output_layers[i+1]))
