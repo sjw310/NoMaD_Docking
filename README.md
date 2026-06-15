@@ -1,7 +1,8 @@
 ### Modifications from the Original NoMaD Codebase
 
-- NoMaD / Visual Navigation Transformer: https://github.com/robodhruv/visualnav-transformer
 This repository is based on the original NoMaD/ViNT implementation and includes several modifications for robot docking research.
+
+NoMaD / Visual Navigation Transformer: https://github.com/robodhruv/visualnav-transformer
 
 ### Main Changes
 - Applied max-normalization to distance labels.
