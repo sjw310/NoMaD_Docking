@@ -11,6 +11,20 @@ NoMaD: https://github.com/robodhruv/visualnav-transformer
 - Adapted the training and inference pipeline.
 - Only used docking dataset. (not Init)
 
+### Setup
+Run the commands below inside the vint_release/ (topmost) directory:
+
+Set up the conda environment:
+conda env create -f train/train_environment.yml
+Source the conda environment:
+conda activate vint_train
+Install the vint_train packages:
+pip install -e train/
+Install the diffusion_policy package from this repo:
+git clone git@github.com:real-stanford/diffusion_policy.git
+pip install -e diffusion_policy/
+
+
 ### Training
 Run training or test from the repository root:
 
