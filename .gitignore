@@ -4,7 +4,7 @@ train/vint_train/data/data_splits/*
 train/wandb/*
 train/gnm_dataset/*
 *_test.yaml
-
+dataset/
 *.png
 *.jpg
 *.pth
@@ -46,6 +46,7 @@ share/python-wheels/
 .installed.cfg
 *.egg
 MANIFEST
+ai_control_old
 
 # PyInstaller
 #  Usually these files are written by a python script from a template

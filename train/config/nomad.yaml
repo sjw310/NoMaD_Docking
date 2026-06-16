@@ -5,13 +5,13 @@
 # =============================================================
 
 # nomad_train / nomad_test
-project_name: nomad_train
+project_name: nomad_train_after_0328
 # dist_max_norm : distance label max normalization / p : action prediction length / a : action_max_dist_cat / d : distance_max_dist_cat
-run_name: nomad_dist_max_norm_p60_a100_d100 
+run_name: nomad_dist_max_norm_p60_a100_d100
 
 # training setup
-use_wandb: False # set to false if you don't want to log to wandb
-train: False # train : True / test : False
+use_wandb: True # set to false if you don't want to log to wandb
+train: True # train : True / test : False
 batch_size: 8
 
 epochs: 100
@@ -89,7 +89,7 @@ datasets:
     format: h5
 
     # h5 file path 지정
-    h5_path: ??? #"/home/<username>/~/*.h5"
+    h5_path: /home/lch/ws/NoMaD_Docking/dataset/after_0328.h5 #"/home/<username>/~/*.h5"
 
 
     image_key: "image_bottom" # room2 image만 사용중
@@ -98,7 +98,7 @@ datasets:
     test_other_episode : True # For the test mode(non-seen data), not the eval mode
 
     # h5 file path 지정
-    test_h5_path: ??? #"/home/<username>/~/*.h5"
+    test_h5_path: "/home/lch/ws/NoMaD_Docking/dataset/saung_dataset_no_lidar.h5"
 
     test_episode_num: 2 # test(non-seen data) 혹은 evaluation 할 episode number
     use_global_goal_for_test : True # True : always gives the global goal
