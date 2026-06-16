@@ -15,7 +15,7 @@ NoMaD: https://github.com/robodhruv/visualnav-transformer
 Run training or test at the train folder:
 
 ```bash
-export PYTHONPATH=/home/<username>/~/visualnav-transformer/diffusion_policy:$PYTHONPATH
+export PYTHONPATH=/home/<username>/.../visualnav-transformer/diffusion_policy:$PYTHONPATH
 ```
 
 ```bash
