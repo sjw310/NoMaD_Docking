@@ -26,12 +26,12 @@ pip install -e diffusion_policy/
 
 
 ### Training
-Run training or test from the repository root:
+Run training or test at the train folder:
 
 ```bash
-export PYTHONPATH=$PWD
+export PYTHONPATH=/home/<username>/.../visualnav-transformer/diffusion_policy:$PYTHONPATH
 ```
 
 ```bash
-python ./train/train.py -c ./train/config/nomad.yaml
+python ./train.py -c ./config/nomad.yaml
 ```
