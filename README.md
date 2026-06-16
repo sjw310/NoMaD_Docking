@@ -33,5 +33,5 @@ export PYTHONPATH=/home/<username>/.../visualnav-transformer/diffusion_policy:$P
 ```
 
 ```bash
-python ./train.py -c ./config/nomad.yaml
+python .train/train.py -c .train/config/nomad.yaml
 ```
