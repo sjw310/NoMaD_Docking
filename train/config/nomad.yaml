@@ -14,7 +14,7 @@ use_wandb: True # set to false if you don't want to log to wandb
 train: True # train : True / test : False
 batch_size: 8
 
-epochs: 100
+epochs: 19
 gpu_ids: [0]
 num_workers: 1
 lr: 1e-4
@@ -30,7 +30,7 @@ plateau_factor: 0.5
 seed: 0
 
 # Resume training from previous run
-#load_run: "nomad_train/~" # file path 지정
+load_run: "nomad_train_after_0328/nomad_dist_max_norm_p60_a100_d100_2026_06_16_16_57_23" # logs/ 기준 상대경로
 
 # load pretrained model for testing
 #test_load_model: "nomad_train/~" # file path 지정
