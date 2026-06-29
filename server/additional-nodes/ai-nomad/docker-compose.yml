@@ -37,7 +37,7 @@ services:
       # 모드/출력 (compose 명령에서 오버라이드)
       NOMAD_MODE: "${NOMAD_MODE:-navigate}"
       ENABLE_SEND: "${ENABLE_SEND:-true}"
-      NOMAD_OBS_STREAM: "${NOMAD_OBS_STREAM:-video1}"
+      NOMAD_OBS_STREAM: "${NOMAD_OBS_STREAM:-video2}"   # orbbec-0 = image_bottom (학습 카메라)
       NOMAD_GOAL_NODE: "${NOMAD_GOAL_NODE:--1}"
       NOMAD_NUM_SAMPLES: "${NOMAD_NUM_SAMPLES:-1}"
       NOMAD_BGR_TO_RGB: "${NOMAD_BGR_TO_RGB:-true}"

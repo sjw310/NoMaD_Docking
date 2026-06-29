@@ -37,7 +37,8 @@ class AINomadRunner(RunnerBase):
         # 스캔 상태
         self._scan_channel = _STREAM_TO_CHANNEL.get(config.nomad_obs_stream, 0)
         self._scan_index = 0
-        self._scan_last_ts = 0.0
+        self._scan_last_ts = 0.0           # time.monotonic 기준 (프레임 ts 아님)
+        self._scan_seen_channels: set = set()
         if config.nomad_mode == "scan" and getattr(config, "scan_reset", False):
             self._reset_topomap_dir()
 
@@ -75,9 +76,17 @@ class AINomadRunner(RunnerBase):
     # ── 스캔: LiveKit 프레임 저장 ──
     def on_video_frame(self, channel: int, slot: int, ts_sec: float) -> None:
         super().on_video_frame(channel, slot, ts_sec)   # windows.push_video (정상 흐름 유지)
-        if self.config.nomad_mode != "scan" or channel != self._scan_channel:
+        if self.config.nomad_mode != "scan":
             return
-        if ts_sec - self._scan_last_ts < max(0.05, float(self.config.scan_interval_sec)):
+        # 진단: 채널별 첫 프레임 수신 1회 로깅 (프레임이 실제로 들어오는지 확인)
+        if channel not in self._scan_seen_channels:
+            self._scan_seen_channels.add(channel)
+            logger.info("scan: 프레임 수신 채널=%d (저장 대상=%d)", channel, self._scan_channel)
+        if channel != self._scan_channel:
+            return
+        # 간격은 프레임 ts(robot timestamp_us=0이면 0)가 아니라 **벽시계(monotonic)** 로 잰다.
+        now = time.monotonic()
+        if self._scan_last_ts > 0.0 and now - self._scan_last_ts < max(0.05, float(self.config.scan_interval_sec)):
             return
         if self.shm_ring is None:
             return
@@ -86,7 +95,7 @@ class AINomadRunner(RunnerBase):
             path = save_frame_to_topomap(self.config.topomap_dir, self._scan_index, frame)
             logger.info("scan: topomap 노드 %d 저장 → %s", self._scan_index, path)
             self._scan_index += 1
-            self._scan_last_ts = ts_sec
+            self._scan_last_ts = now
         except Exception:
             logger.exception("scan 프레임 저장 실패")
 

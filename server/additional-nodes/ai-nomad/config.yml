@@ -13,7 +13,7 @@ nomad_radius: 4
 nomad_close_threshold: 0.2        # dist_pred 정규화(0~1) 스케일 (원본 3.0=timestep 과 다름)
 nomad_goal_node: -1               # -1 = topomap 마지막 노드
 nomad_num_samples: 1
-nomad_obs_stream: video1          # 학습 image_bottom 에 해당하는 LiveKit 트랙(video1/video2)
+nomad_obs_stream: video2          # 학습 image_bottom = orbbec-0 = video2 (확정)
 nomad_context_stride: 1
 nomad_bgr_to_rgb: true
 
@@ -28,7 +28,7 @@ require_encoder: false
 require_marker_pose: false
 require_video: true
 window_sync_mode: track
-window_sync_reference_track: usb-0
+window_sync_reference_track: orbbec-0   # NoMaD가 쓰는 관측 카메라(image_bottom)에 동기
 window_sync_max_age_sec: 0.1
 interpolation_enabled: false
 data_unreliable_slow_tail_size: 0
