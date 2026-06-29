@@ -1,0 +1,75 @@
+{
+  "ckpt": "/home/lch/ws/NoMaD_Docking/train/logs/nomad_train_after_0328/nomad_dist_max_norm_p60_a100_d100_2026_06_18_20_42_07/ema_18.pth",
+  "h5": "/home/lch/ws/NoMaD_Docking/dataset/after_0328.h5",
+  "episode": 0,
+  "device": "cuda",
+  "num_nodes": 15,
+  "goal_node": 14,
+  "params": {
+    "context_size": 5,
+    "len_traj_pred": 60,
+    "num_samples": 4,
+    "radius": 4,
+    "topomap_spacing": 40,
+    "context_spacing": 6
+  },
+  "monotonic_closest": [
+    0,
+    4,
+    7,
+    11,
+    12
+  ],
+  "records": [
+    {
+      "frac": 0.0,
+      "frame": 0,
+      "closest_node": 0,
+      "subgoal_node": 1,
+      "closest_distance": 0.023288041353225708,
+      "reached_goal": false,
+      "v_mean": -0.010113302618265152,
+      "w_mean": -0.003988962154835463
+    },
+    {
+      "frac": 0.25,
+      "frame": 141,
+      "closest_node": 4,
+      "subgoal_node": 4,
+      "closest_distance": 0.20116542279720306,
+      "reached_goal": false,
+      "v_mean": -2.2765249013900757e-05,
+      "w_mean": -0.02078167349100113
+    },
+    {
+      "frac": 0.5,
+      "frame": 283,
+      "closest_node": 7,
+      "subgoal_node": 8,
+      "closest_distance": 0.025332972407341003,
+      "reached_goal": false,
+      "v_mean": -0.011568673886358738,
+      "w_mean": 0.02904825657606125
+    },
+    {
+      "frac": 0.75,
+      "frame": 425,
+      "closest_node": 11,
+      "subgoal_node": 12,
+      "closest_distance": 0.14855636656284332,
+      "reached_goal": false,
+      "v_mean": -0.00679759681224823,
+      "w_mean": 0.014200698584318161
+    },
+    {
+      "frac": 0.95,
+      "frame": 538,
+      "closest_node": 12,
+      "subgoal_node": 13,
+      "closest_distance": 0.09996657073497772,
+      "reached_goal": false,
+      "v_mean": 0.007124654483050108,
+      "w_mean": 0.025620190426707268
+    }
+  ]
+}

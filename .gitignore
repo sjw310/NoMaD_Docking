@@ -148,5 +148,12 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
-server/
+server/additional-nodes/ai-control
+server/addtional-nodes/ai-world
+server/additional-nodes/node_sdk
+server/additional-nodes/ai-world
+server/additional-nodes/Dockerfile
+server/additional-nodes/READ*
+server/rc_server
+server/additional-nodes/ai_nomad_node/models
 *.pdf
