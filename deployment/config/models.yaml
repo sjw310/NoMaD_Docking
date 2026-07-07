@@ -11,8 +11,10 @@ gnm:
   ckpt_path: "../model_weights/gnm_large.pth"
 
 nomad: 
-  config_path: "../../train/config/nomad.yaml"
-  ckpt_path: "../model_weights/nomad.pth"
+  config_path: "../../train/logs/nomad_train/nomad_pose_x_y_theta_encoder_context_spacing_10_p60_DiT_x_03_y_05_2026_07_06_23_17_12/config.yaml"
+  ckpt_path: "../../train/logs/nomad_train/nomad_pose_x_y_theta_encoder_context_spacing_10_p60_DiT_x_03_y_05_2026_07_06_23_17_12/ema_latest.pth"
+  #ckpt_path: "../ema_18.pth"
+
 
 
 # add your own model configs here after saving the *.pth file to ../model_weight

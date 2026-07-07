@@ -1,0 +1,53 @@
+# ai-nomad 노드 설정 (NoMaD_pose + topomap 첫 프레임 goal image 주행).
+# 모드는 nomad_mode (또는 env NOMAD_MODE) 로 navigate|scan 전환.
+
+plugin_id: ai-nomad-pose
+run_plugin: run_nomad_topomap     # ai_models/plugins/run_nomad_topomap.py
+nomad_mode: navigate              # navigate | scan (env NOMAD_MODE 우선)
+
+# ── 모델 / topomap goal image ──
+nomad_ckpt: /models/ai-nomad-pose/ema_jiwon.pth
+nomad_params_yaml: ""             # 비면 NoMaDParams 기본값(train/config/nomad.yaml 동일)
+topomap_dir: /models/ai-nomad-pose/topomap # 첫 번째 이미지를 최종 goal image로 사용
+nomad_radius: 4
+nomad_close_threshold: 0.2        # dist_pred 정규화(0~1) 스케일 (원본 3.0=timestep 과 다름)
+nomad_goal_node: -1               # -1 = topomap 마지막 노드
+nomad_num_samples: 4
+nomad_obs_stream: video2          # 학습 image_bottom = orbbec-0 = video2 (확정)
+nomad_context_stride: 6
+nomad_bgr_to_rgb: true
+
+# ── 스캔 ──
+scan_interval_sec: 1.0
+scan_reset: true                  # 스캔 시작 시 topomap_dir 비우기
+
+# ── 윈도우 (카메라만) ──
+window_size: 60
+require_lidar: false
+require_encoder: True
+require_marker_pose: false
+require_video: true
+window_sync_mode: track
+window_sync_reference_track: orbbec-0   # NoMaD가 쓰는 관측 카메라(image_bottom)에 동기
+window_sync_max_age_sec: 0.1
+interpolation_enabled: false
+data_unreliable_slow_tail_size: 0
+
+# ── 추론 / 전송 ──
+inference_size: 16
+inference_fps: 30                 # 학습 dt=0.0333(30Hz)
+send_interval_sec: 0.1
+action_horizon: 4
+send_padding_cap_interval_multiplier: 8.0
+send_padding_reflect_small_latency: true
+
+# ── 영상 (LiveKit) ──
+num_video_channels: 2
+video_height: 480
+video_width: 640
+livekit_tracks_video1: usb-0
+livekit_tracks_video2: orbbec-0
+
+# ── 출력 ──
+enable_send: true                 # navigate 에서 MQTT 발행. 비교(추론전용)면 false 또는 env ENABLE_SEND=false
+log_level: INFO

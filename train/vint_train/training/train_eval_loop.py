@@ -178,7 +178,9 @@ def train_eval_loop_nomad(
     eval_freq: int = 1,
     predict_velocity = True,
     ACTION_STATS = None,
-    max_distance = 400
+    POSE_STATS=None,
+    max_distance = 20,
+    ema_checkpoint_path: Optional[str] = None,
 ):
     """
     Train and evaluate the model for several epochs (vint or gnm models)
@@ -207,6 +209,13 @@ def train_eval_loop_nomad(
     """
     latest_path = os.path.join(project_folder, f"latest.pth")
     ema_model = EMAModel(model=model,power=0.75)
+    if ema_checkpoint_path is not None:
+        if os.path.exists(ema_checkpoint_path):
+            ema_state_dict = torch.load(ema_checkpoint_path, map_location=device)
+            load_ema_model(ema_model, ema_state_dict)
+            print(f"Loaded EMA model from {ema_checkpoint_path}")
+        else:
+            print(f"EMA checkpoint not found: {ema_checkpoint_path}")
     
     if train_model:
         for epoch in range(current_epoch, epochs):
@@ -233,6 +242,7 @@ def train_eval_loop_nomad(
                 alpha=alpha,
                 predict_velocity=predict_velocity,
                 ACTION_STATS=ACTION_STATS,
+                POSE_STATS=POSE_STATS,
                 max_distance=max_distance
             )
             
@@ -241,6 +251,7 @@ def train_eval_loop_nomad(
             numbered_path = os.path.join(project_folder, f"ema_{epoch}.pth")
             torch.save(ema_model.averaged_model.state_dict(), numbered_path)
             numbered_path = os.path.join(project_folder, f"ema_latest.pth")
+            torch.save(ema_model.averaged_model.state_dict(), numbered_path)
             print(f"Saved EMA model to {numbered_path}")
 
             numbered_path = os.path.join(project_folder, f"{epoch}.pth")
@@ -249,13 +260,15 @@ def train_eval_loop_nomad(
             print(f"Saved model to {numbered_path}")
 
             # save optimizer
-            numbered_path = os.path.join(project_folder, f"optimizer_{epoch}.pth")
+            numbered_optimizer_path = os.path.join(project_folder, f"optimizer_{epoch}.pth")
             latest_optimizer_path = os.path.join(project_folder, f"optimizer_latest.pth")
+            torch.save(optimizer.state_dict(), numbered_optimizer_path)
             torch.save(optimizer.state_dict(), latest_optimizer_path)
 
             # save scheduler
-            numbered_path = os.path.join(project_folder, f"scheduler_{epoch}.pth")
+            numbered_scheduler_path = os.path.join(project_folder, f"scheduler_{epoch}.pth")
             latest_scheduler_path = os.path.join(project_folder, f"scheduler_latest.pth")
+            torch.save(lr_scheduler.state_dict(), numbered_scheduler_path)
             torch.save(lr_scheduler.state_dict(), latest_scheduler_path)
             
             if use_wandb:
@@ -305,6 +318,7 @@ def train_eval_loop_nomad(
                 eval_fraction=eval_fraction,
                 predict_velocity = predict_velocity,
                 ACTION_STATS=ACTION_STATS,
+                POSE_STATS=POSE_STATS,
                 max_distance=max_distance
             )
 
@@ -329,8 +343,8 @@ def load_model(model, model_type, checkpoint: dict) -> None:
 
 
 def load_ema_model(ema_model, state_dict: dict) -> None:
-    """Load model from checkpoint."""
-    ema_model.load_state_dict(state_dict)
+    """Load EMA averaged model weights from checkpoint."""
+    ema_model.averaged_model.load_state_dict(state_dict, strict=False)
 
 
 def count_parameters(model):

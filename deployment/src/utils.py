@@ -5,7 +5,7 @@ import io
 import matplotlib.pyplot as plt
 
 # ROS
-from sensor_msgs.msg import Image
+#from sensor_msgs.msg import Image
 
 # pytorch
 import torch
@@ -22,9 +22,10 @@ from vint_train.models.gnm.gnm import GNM
 from vint_train.models.vint.vint import ViNT
 
 from vint_train.models.vint.vit import ViT
-from vint_train.models.nomad.nomad import NoMaD, DenseNetwork
+from vint_train.models.nomad.nomad import NoMaD, NoMaD_pose, DenseNetwork, PoseNetwork
 from vint_train.models.nomad.nomad_vint import NoMaD_ViNT, replace_bn_with_gn
 from diffusion_policy.model.diffusion.conditional_unet1d import ConditionalUnet1D
+from diffusion_policy.model.diffusion.transformer_for_diffusion import TransformerForDiffusion
 from vint_train.data.data_utils import IMAGE_ASPECT_RATIO
 
 
@@ -64,6 +65,15 @@ def load_model(
                 mha_num_attention_heads=config["mha_num_attention_heads"],
                 mha_num_attention_layers=config["mha_num_attention_layers"],
                 mha_ff_dim_factor=config["mha_ff_dim_factor"],
+                sensor_context_sizes={
+                    "encoder": config.get("encoder_imu_context_size", 30 + 1),
+                    "imu": config.get("encoder_imu_context_size", 30 + 1),
+                    "lidar": config.get("lidar_context_size", config["context_size"] + 1),
+                },
+                use_encoder=config.get("use_encoder", False),
+                use_imu=config.get("use_imu", False),
+                use_lidar=config.get("use_lidar", False),
+                num_image_keys=len(config.get("data_image_keys", ["image_bottom"])),
             )
             vision_encoder = replace_bn_with_gn(vision_encoder)
         elif config["vision_encoder"] == "vit": 
@@ -79,25 +89,47 @@ def load_model(
         else: 
             raise ValueError(f"Vision encoder {config['vision_encoder']} not supported")
         
+
         noise_pred_net = ConditionalUnet1D(
                 input_dim=2,
                 global_cond_dim=config["encoding_size"],
                 down_dims=config["down_dims"],
                 cond_predict_scale=config["cond_predict_scale"],
             )
-        dist_pred_network = DenseNetwork(embedding_dim=config["encoding_size"])
         
-        model = NoMaD(
-            vision_encoder=vision_encoder,
-            noise_pred_net=noise_pred_net,
-            dist_pred_net=dist_pred_network,
-        )
+        noise_pred_net = TransformerForDiffusion(
+                input_dim=2,
+                output_dim=2,
+                horizon=config["len_traj_pred"],
+                cond_dim=config["encoding_size"],
+                n_obs_steps=1,
+                n_layer=12,
+                n_head=6,
+                n_emb=384,
+            )
+
+
+
+        if config.get("use_pose", True):
+            pose_pred_network = PoseNetwork(embedding_dim=config["encoding_size"])
+            model = NoMaD_pose(
+                vision_encoder=vision_encoder,
+                noise_pred_net=noise_pred_net,
+                pose_pred_net=pose_pred_network,
+            )
+        else:
+            dist_pred_network = DenseNetwork(embedding_dim=config["encoding_size"])
+            model = NoMaD(
+                vision_encoder=vision_encoder,
+                noise_pred_net=noise_pred_net,
+                dist_pred_net=dist_pred_network,
+            )
     else:
         raise ValueError(f"Invalid model type: {model_type}")
     
-    checkpoint = torch.load(model_path, map_location=device)
+    checkpoint = torch.load(model_path, map_location=device, weights_only=False)
     if model_type == "nomad":
-        state_dict = checkpoint
+        state_dict = checkpoint.get("model", checkpoint) if isinstance(checkpoint, dict) else checkpoint
         model.load_state_dict(state_dict, strict=False)
     else:
         loaded_model = checkpoint["model"]
@@ -110,7 +142,7 @@ def load_model(
     model.to(device)
     return model
 
-
+"""
 def msg_to_pil(msg: Image) -> PILImage.Image:
     img = np.frombuffer(msg.data, dtype=np.uint8).reshape(
         msg.height, msg.width, -1)
@@ -125,7 +157,7 @@ def pil_to_msg(pil_img: PILImage.Image, encoding="mono8") -> Image:
     ros_image.data = img.ravel().tobytes() 
     ros_image.step = ros_image.width
     return ros_image
-
+"""
 
 def to_numpy(tensor):
     return tensor.cpu().detach().numpy()

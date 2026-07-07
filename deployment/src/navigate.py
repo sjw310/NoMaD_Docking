@@ -1,13 +1,9 @@
 import matplotlib.pyplot as plt
 import os
 from typing import Tuple, Sequence, Dict, Union, Optional, Callable
-import numpy as np
 import torch
 import torch.nn as nn
 from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
-
-import matplotlib.pyplot as plt
-import yaml
 
 # ROS
 import rospy
@@ -16,7 +12,6 @@ from std_msgs.msg import Bool, Float32MultiArray
 from utils import msg_to_pil, to_numpy, transform_images, load_model
 
 from vint_train.training.train_utils import get_action
-import torch
 from PIL import Image as PILImage
 import numpy as np
 import argparse
@@ -33,7 +28,10 @@ from topic_names import (IMAGE_TOPIC,
 TOPOMAP_IMAGES_DIR = "../topomaps/images"
 MODEL_WEIGHTS_PATH = "../model_weights"
 ROBOT_CONFIG_PATH ="../config/robot.yaml"
+
 MODEL_CONFIG_PATH = "../config/models.yaml"
+
+
 with open(ROBOT_CONFIG_PATH, "r") as f:
     robot_config = yaml.safe_load(f)
 MAX_V = robot_config["max_v"]
@@ -89,9 +87,12 @@ def main(args: argparse.Namespace):
     model.eval()
 
     
-     # load topomap
+    # load topomap
+    # os.listdir(...) : 해당 폴더 안의 파일 목록을 가져옴, 순서는 보장되지 않음
+    # sorted(..., key=lambda x: int(x.split(".")[0])) : 정렬
     topomap_filenames = sorted(os.listdir(os.path.join(
         TOPOMAP_IMAGES_DIR, args.dir)), key=lambda x: int(x.split(".")[0]))
+    
     topomap_dir = f"{TOPOMAP_IMAGES_DIR}/{args.dir}"
     
     num_nodes = len(os.listdir(topomap_dir))

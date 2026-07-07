@@ -5,16 +5,16 @@
 # =============================================================
 
 # nomad_train / nomad_test
-project_name: nomad_train_after_0328
+project_name: nomad_train
 # dist_max_norm : distance label max normalization / p : action prediction length / a : action_max_dist_cat / d : distance_max_dist_cat
-run_name: nomad_dist_max_norm_p60_a100_d100
+run_name: nomad_pose_x_y_theta_context_spacing_10_p60_DiT_x_03_y_05_0328
 
 # training setup
-use_wandb: True # set to false if you don't want to log to wandb
+use_wandb: False # set to false if you don't want to log to wandb
 train: True # train : True / test : False
 batch_size: 8
 
-epochs: 19
+epochs: 20
 gpu_ids: [0]
 num_workers: 1
 lr: 1e-4
@@ -30,7 +30,7 @@ plateau_factor: 0.5
 seed: 0
 
 # Resume training from previous run
-load_run: "nomad_train_after_0328/nomad_dist_max_norm_p60_a100_d100_2026_06_16_16_57_23" # logs/ 기준 상대경로
+# load_run: nomad_train/nomad_pose_x_y_theta_encoder_context_spacing_10_p60_DiT_x_03_y_05_2026_07_06_00_56_25 # "nomad_train/~" # file path 지정
 
 # load pretrained model for testing
 #test_load_model: "nomad_train/~" # file path 지정
@@ -48,7 +48,7 @@ mha_ff_dim_factor: 4
 down_dims: [64, 128, 256]
 
 # diffusion model params
-num_diffusion_iters: 10
+num_diffusion_iters: 100
 
 # mask 
 goal_mask_prob: 0.5
@@ -61,15 +61,15 @@ context_type: temporal
 context_size: 5 # 3 or 5
 
 # default는 1e-4, 대신 distance 정규화 안함
-alpha: 0.3 # dist_loss * alpha + action_loss * (1-alpha)
+alpha: 0.4 # dist_loss * alpha + action_loss * (1-alpha)
 
 # distance bounds for distance and action and distance predictions 
 distance:
   min_dist_cat: 0
-  max_dist_cat: 100
+  max_dist_cat: 5
 action:
   min_dist_cat: 0
-  max_dist_cat: 100
+  max_dist_cat: 5
 
 # action output params
 len_traj_pred: 60
@@ -80,34 +80,98 @@ predict_velocity : True
 
 # dataset specific parameters
 image_size: [320, 240] # width, height
+
+# to constrain camera numbers
+data_image_keys:
+  - image_bottom
+  #- image_top
+  #- camera_right
+  #- camera_left
+
+chunk_size: 60 # chunk size for the dataset
+
+use_encoder: False
+use_imu: False
+use_lidar: False
+return_sensor_history: False
+
+encoder_imu_context_size: 30
+encoder_imu_context_spacing: 1
+
+lidar_context_size: 5
+lidar_context_spacing: 6
+
+action_stats_percent_99: False
+pose_stats_percent_99: False
+
 datasets:
-
-
-  # NoMaD / ViNT 데이터셋 구조는 trajectory 폴더 + 이미지 파일 + pkl 구조
-  # h5에 맞춰서 따로 module을 만든 상태: vint_dataset_episode.py
-  episode_postech_260330_dock:
+  episode_postech_dock:
     format: h5
+    
+    h5_datasets:
+      - h5_path: /home/sjw00310/Desktop/diffusion_policy_robot_docking/dataset/h5_dataset/train_episode_postech_260328_dock.h5
+        image_keys:
+          - image_bottom
+          #- image_top
+          #- camera_right
+          #- camera_rear
 
-    # h5 file path 지정
-    h5_path: /home/lch/ws/NoMaD_Docking/dataset/after_0328.h5 #"/home/<username>/~/*.h5"
+        action_key: "encoder"
+        encoder_key: null # "encoder"
+        imu_key: null
+        lidar_key: null
 
+        exclude_train_episode_nums: [10,12,25,33,38]
 
-    image_key: "image_bottom" # room2 image만 사용중
-    action_key: "encoder"
+      # - h5_path: /home/sjw00310/Desktop/diffusion_policy_robot_docking/dataset/h5_dataset/train_episode_postech_260330_dock.h5
+      #   image_keys:
+      #     - image_bottom
+      #     #- image_top
+      #     #- camera_right
+      #     #- camera_rear
+        
+      #   action_key: "encoder"
+      #   encoder_key: null # "encoder"
+      #   imu_key: null
+      #   lidar_key: null
 
-    test_other_episode : True # For the test mode(non-seen data), not the eval mode
+      #   exclude_train_episode_nums: [1,16,34,39,51]
+        
+      #   - h5_path: /home/sjw00310/Desktop/diffusion_policy_robot_docking/dataset/h5_dataset/saung_dock.h5
+      #     image_keys: 
+      #       - image_bottom
+      #       #- image_top
+      #       #- camera_right
+      #       #- camera_rear
 
-    # h5 file path 지정
-    test_h5_path: "/home/lch/ws/NoMaD_Docking/dataset/saung_dataset_no_lidar.h5"
+      #     action_key: "encoder"
+      #     encoder_key: "encoder"
+      #     imu_key: null
+      #     lidar_key: null
 
-    test_episode_num: 2 # test(non-seen data) 혹은 evaluation 할 episode number
-    use_global_goal_for_test : True # True : always gives the global goal
+      #   exclude_train_episode_nums: [3,4,9]
 
-    context_spacing : 6 
-    waypoint_spacing: 1 # waypoint or velocity 몇 step 간격으로 사용할지
-    end_slack: 0 # trajectory 끝부분을 얼마나 버릴지
-    negative_mining: True # negative sample(틀린 goal)을 사용할지 여부
-    goals_per_obs: 1 # observation 하나당 몇 개 goal 샘플 생성할지
+    
+    test_h5_path: /home/sjw00310/Desktop/diffusion_policy_robot_docking/dataset/h5_dataset/train_episode_postech_260330_dock.h5
+    test_image_keys: 
+      - image_bottom
+      #- image_top
+      #- camera_right
+      #- camera_rear
+    
+    test_action_key: "encoder"
+    test_encoder_key: null # "encoder"
+    test_imu_key: null
+    test_lidar_key: null
+
+    test_episode_num: 2
+    use_global_goal_for_test: True
+
+    context_spacing: 6
+    waypoint_spacing: 1
+    end_slack: 0
+    negative_mining: False
+    goals_per_obs: 1
 
   
   # Default way to loading the dataset
@@ -164,9 +228,9 @@ datasets:
 
 # logging stuff
 ## =0 turns off
-print_log_freq: 4000 # in iterations
-image_log_freq: 1 #0 # in iterations
-num_images_log: 8 #0 
+print_log_freq: 200 # in iterations
+image_log_freq: 0 #0 # in iterations
+num_images_log: 0 #0 
 pairwise_test_freq: 0 # in epochs
 eval_fraction: 1.0
 wandb_log_freq: 10 # in iterations

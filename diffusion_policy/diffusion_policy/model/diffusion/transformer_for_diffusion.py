@@ -270,7 +270,10 @@ class TransformerForDiffusion(ModuleAttrMixin):
     def forward(self, 
         sample: torch.Tensor, 
         timestep: Union[torch.Tensor, float, int], 
-        cond: Optional[torch.Tensor]=None, **kwargs):
+        cond: Optional[torch.Tensor]=None,global_cond=None,**kwargs):
+
+        if cond is None and global_cond is not None:
+            cond = global_cond.unsqueeze(1)
         """
         x: (B,T,input_dim)
         timestep: (B,) or int, diffusion step

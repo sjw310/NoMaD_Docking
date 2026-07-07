@@ -587,13 +587,18 @@ def _compute_losses_nomad(
     noise_scheduler,
     batch_obs_images,
     batch_goal_images,
-    batch_dist_label: torch.Tensor,
+    #batch_dist_label: torch.Tensor,
+    batch_pose_align_target: torch.Tensor,
     batch_action_label: torch.Tensor,
     device: torch.device,
     action_mask: torch.Tensor,
     predict_velocity: bool = True,
     ACTION_STATS = None,
+    POSE_STATS=None,
     max_distance = 400,
+    encoder_hist=None,
+    imu_hist=None,
+    lidar_hist=None,
 ):
     """
     Compute losses for distance and action prediction.
@@ -612,10 +617,15 @@ def _compute_losses_nomad(
         num_samples=1,
         device=device,
         predict_velocity=predict_velocity,
+        encoder_hist=encoder_hist,
+        imu_hist=imu_hist,
+        lidar_hist=lidar_hist,
     )
+
     uc_actions = model_output_dict['uc_actions']
     gc_actions = model_output_dict['gc_actions']
-    gc_distance = model_output_dict['gc_distance']
+    #gc_distance = model_output_dict['gc_distance']
+    gc_pose = model_output_dict["gc_pose"]
 
     debug_now =True
 
@@ -629,26 +639,62 @@ def _compute_losses_nomad(
         print("gc_actions shape:", gc_actions.shape)
         print("label shape:", batch_action_label.shape)
         print("action_mask:", action_mask[b].item())
-        print("distance label:", batch_dist_label[b].item())
+        #print("distance label:", batch_dist_label[b].item())
 
-        print("\n[UC pred action]")
-        print(np.round(uc_actions[b][:5].detach().cpu().numpy(), 5))
+        print("pred pose norm:", gc_pose[b].detach().cpu().numpy())
+        print("gt pose norm:", batch_pose_align_target[b].detach().cpu().numpy())
+        
+        gc_pose_raw = unnormalize_pose(gc_pose, POSE_STATS)
+        target_pose_raw = unnormalize_pose(batch_pose_align_target, POSE_STATS)
 
-        print("\n[GC pred action]")
-        print(np.round(gc_actions[b][:5].detach().cpu().numpy(), 5))
+        def unnormalize_action_tensor(action_tensor):
+            if ACTION_STATS is None:
+                return action_tensor
+            scale = torch.as_tensor(
+                ACTION_STATS["scale"],
+                device=action_tensor.device,
+                dtype=action_tensor.dtype,
+            )
+            min_val = torch.as_tensor(
+                ACTION_STATS["min"],
+                device=action_tensor.device,
+                dtype=action_tensor.dtype,
+            )
+            return ((action_tensor + 1.0) / 2.0) * scale + min_val
 
-        print("\n[GT action label]")
-        print(np.round(batch_action_label[b][:5].detach().cpu().numpy(), 5))
+        uc_actions_raw = unnormalize_action_tensor(uc_actions)
+        gc_actions_raw = unnormalize_action_tensor(gc_actions)
+        batch_action_label_raw = unnormalize_action_tensor(batch_action_label)
 
-        print("\n[GC - GT]")
-        print(np.round((gc_actions[b][:5] - batch_action_label[b][:5]).detach().cpu().numpy(), 5))
+        print("\n[UC pred action raw]")
+        print(np.round(uc_actions_raw[b][:5].detach().cpu().numpy(), 5))
 
+        print("\n[GC pred action raw]")
+        print(np.round(gc_actions_raw[b][:5].detach().cpu().numpy(), 5))
+
+        print("\n[GT action label raw]")
+        print(np.round(batch_action_label_raw[b][:5].detach().cpu().numpy(), 5))
+
+        print("\n[GC - GT raw]")
+        print(np.round((gc_actions_raw[b][:5] - batch_action_label_raw[b][:5]).detach().cpu().numpy(), 5))
+
+        print("pred pose raw [x, y, theta]:", gc_pose_raw[b].detach().cpu().numpy())
+        print("gt pose raw [x, y, theta]:", target_pose_raw[b].detach().cpu().numpy())
+        print("pose raw error:", (gc_pose_raw[b] - target_pose_raw[b]).detach().cpu().numpy())
+ 
+
+        """
         print("\n===== NOMAD DIST DEBUG =====")
         print("gc_distance shape:", gc_distance.shape)
         print("batch_dist_label shape:", batch_dist_label.shape)
+        """
+        print("\n===== NOMAD POSE DEBUG =====")
+        print("gc_pose shape:", gc_pose.shape)
+        print("batch_pose_align_target shape:", batch_pose_align_target.shape)
 
-        gc_distance_scaled = gc_distance * max_distance
+        #gc_distance_scaled = gc_distance * max_distance
 
+        """
         print("gc_distance norm:", gc_distance[b].detach().cpu().numpy())
         print("gc_distance scaled:", gc_distance_scaled[b].detach().cpu().numpy())
         print("dist_label:", batch_dist_label[b].detach().cpu().numpy())
@@ -662,12 +708,17 @@ def _compute_losses_nomad(
 
         print("dist error[:8]:")
         print(np.round((gc_distance_scaled[:8].squeeze(-1) - batch_dist_label[:8]).detach().cpu().numpy(),5))
-
+        """
         print("==============================\n")
 
+    """
     # loss 계산 시 distance label 0~1 정규화
     dist_target = batch_dist_label.float().unsqueeze(-1) / max_distance
     gc_dist_loss = F.mse_loss(gc_distance,dist_target)
+    """
+
+    batch_pose_align_target = batch_pose_align_target.float().to(device)
+    gc_pose_loss = F.mse_loss(gc_pose,batch_pose_align_target)
 
 
     def action_reduce(unreduced_loss: torch.Tensor):
@@ -706,7 +757,8 @@ def _compute_losses_nomad(
         "uc_action_loss": uc_action_loss,
         "uc_action_waypts_cos_sim": uc_action_waypts_cos_similairity,
         "uc_multi_action_waypts_cos_sim": uc_multi_action_waypts_cos_sim,
-        "gc_dist_loss": gc_dist_loss,
+        #"gc_dist_loss": gc_dist_loss,
+        "gc_pose_loss": gc_pose_loss,
         "gc_action_loss": gc_action_loss,
         "gc_action_waypts_cos_sim": gc_action_waypts_cos_similairity,
         "gc_multi_action_waypts_cos_sim": gc_multi_action_waypts_cos_sim,
@@ -734,7 +786,8 @@ def train_nomad(
     use_wandb: bool = True,
     predict_velocity: bool = True,
     ACTION_STATS =None,
-    max_distance = 400
+    POSE_STATS=None,
+    max_distance = 20
 ):
     """
     Train the model for one epoch.
@@ -760,26 +813,36 @@ def train_nomad(
     model.train()
     num_batches = len(dataloader)
 
-    uc_action_loss_logger = Logger("uc_action_loss", "train", window_size=print_log_freq)
-    uc_action_waypts_cos_sim_logger = Logger(
-        "uc_action_waypts_cos_sim", "train", window_size=print_log_freq
-    )
-    uc_multi_action_waypts_cos_sim_logger = Logger(
-        "uc_multi_action_waypts_cos_sim", "train", window_size=print_log_freq
-    )
-    gc_dist_loss_logger = Logger("gc_dist_loss", "train", window_size=print_log_freq)
-    gc_action_loss_logger = Logger("gc_action_loss", "train", window_size=print_log_freq)
-    gc_action_waypts_cos_sim_logger = Logger(
-        "gc_action_waypts_cos_sim", "train", window_size=print_log_freq
-    )
-    gc_multi_action_waypts_cos_sim_logger = Logger(
-        "gc_multi_action_waypts_cos_sim", "train", window_size=print_log_freq
-    )
-    loggers = {
+    train_loggers = {
+        "total_loss": Logger("total_loss", "train", window_size=print_log_freq),
+        "pose_loss": Logger("pose_loss", "train", window_size=print_log_freq),
+        "diffusion_loss": Logger("diffusion_loss", "train", window_size=print_log_freq),
+    }
+
+    ema_window_size = 10
+    uc_action_loss_logger = Logger("uc_action_loss", "train_ema", window_size=ema_window_size)
+    # uc_action_waypts_cos_sim_logger = Logger(
+    #     "uc_action_waypts_cos_sim", "train", window_size=print_log_freq
+    # )
+    # uc_multi_action_waypts_cos_sim_logger = Logger(
+    #     "uc_multi_action_waypts_cos_sim", "train", window_size=print_log_freq
+    # )
+    
+    #gc_dist_loss_logger = Logger("gc_dist_loss", "train_ema", window_size=print_log_freq)
+    gc_pose_loss_logger = Logger("gc_pose_loss", "train_ema", window_size=ema_window_size)
+    gc_action_loss_logger = Logger("gc_action_loss", "train_ema", window_size=ema_window_size)
+    # gc_action_waypts_cos_sim_logger = Logger(
+    #     "gc_action_waypts_cos_sim", "train", window_size=print_log_freq
+    # )
+    # gc_multi_action_waypts_cos_sim_logger = Logger(
+    #     "gc_multi_action_waypts_cos_sim", "train", window_size=print_log_freq
+    # )
+    ema_loggers = {
         "uc_action_loss": uc_action_loss_logger,
         #"uc_action_waypts_cos_sim": uc_action_waypts_cos_sim_logger, # for waypoint prediction
         #"uc_multi_action_waypts_cos_sim": uc_multi_action_waypts_cos_sim_logger, # for waypoint prediction
-        "gc_dist_loss": gc_dist_loss_logger,
+        #"gc_dist_loss": gc_dist_loss_logger,
+        "gc_pose_loss": gc_pose_loss_logger,
         "gc_action_loss": gc_action_loss_logger,
         #"gc_action_waypts_cos_sim": gc_action_waypts_cos_sim_logger, # for waypoint prediction
         #"gc_multi_action_waypts_cos_sim": gc_multi_action_waypts_cos_sim_logger, # for waypoint prediction
@@ -796,6 +859,8 @@ def train_nomad(
                 action_mask, 
                 ep_idx,
                 curr_time,
+                pose_align_target,
+                sensor_dict,
             ) = data
 
             """
@@ -810,7 +875,8 @@ def train_nomad(
             torch.as_tensor(curr_time, dtype=torch.int64),
             """        
         
-            obs_images = torch.split(obs_image, 3, dim=1)
+            obs_channels = goal_image.shape[1]  # image key 개수 * 3
+            obs_images = torch.split(obs_image, obs_channels, dim=1)
             
             batch_viz_obs_images = TF.resize(obs_images[-1], VISUALIZATION_IMAGE_SIZE[::-1])
             batch_viz_goal_images = TF.resize(goal_image, VISUALIZATION_IMAGE_SIZE[::-1])
@@ -825,8 +891,29 @@ def train_nomad(
 
             # Generate random goal mask
             goal_mask = (torch.rand((B,)) < goal_mask_prob).long().to(device)
-            obsgoal_cond = model("vision_encoder", obs_img=batch_obs_images, goal_img=batch_goal_images, input_goal_mask=goal_mask)
-            
+            encoder_hist = sensor_dict.get("encoder_hist", None)
+            imu_hist = sensor_dict.get("imu_hist", None)
+            lidar_hist = sensor_dict.get("lidar_hist", None)
+
+            if encoder_hist is not None:
+                encoder_hist = encoder_hist.to(device)
+            if imu_hist is not None:
+                imu_hist = imu_hist.to(device)
+            if lidar_hist is not None:
+                lidar_hist = lidar_hist.to(device)
+
+            obsgoal_cond = model(
+                "vision_encoder",
+                obs_img=batch_obs_images,
+                goal_img=batch_goal_images,
+                input_goal_mask=goal_mask,
+                encoder_hist=encoder_hist,
+                imu_hist=imu_hist,
+                lidar_hist=lidar_hist,
+            )
+
+            pose_align_target = pose_align_target.float().to(device)
+
             # Get distance label
             distance = distance.float().to(device)
             # normalize
@@ -844,11 +931,15 @@ def train_nomad(
 
             assert naction.shape[-1] == 2, "action dim must be 2"
 
+            """
             # Predict distance
-            
             dist_pred = model("dist_pred_net", obsgoal_cond=obsgoal_cond)
             dist_loss = nn.functional.mse_loss(dist_pred.squeeze(-1), distance_norm)
             dist_loss = (dist_loss * (1 - goal_mask.float())).mean() / (1e-2 +(1 - goal_mask.float()).mean())
+            """
+            pose_pred = model("pose_pred_net", obsgoal_cond=obsgoal_cond)
+            pose_loss = F.mse_loss(pose_pred,pose_align_target,reduction="none",).mean(dim=-1)
+            pose_loss = (pose_loss * (1 - goal_mask.float())).mean() / (1e-2 + (1 - goal_mask.float()).mean())
 
             # Sample noise to add to actions
             noise = torch.randn(naction.shape, device=device)
@@ -877,6 +968,22 @@ def train_nomad(
             diffusion_loss = action_reduce(F.mse_loss(noise_pred, noise, reduction="none"))
             
             # Total loss
+            #loss = alpha * dist_loss + (1-alpha) * diffusion_loss
+            loss = alpha * pose_loss + (1-alpha) * diffusion_loss
+
+            grad_accum_steps = 4
+
+            if i % grad_accum_steps == 0:
+                optimizer.zero_grad()
+
+            (loss / grad_accum_steps).backward()
+
+            if (i + 1) % grad_accum_steps == 0 or (i + 1) == num_batches:
+                optimizer.step()
+                ema_model.step(model)
+            
+            """
+            # Total loss
             loss = alpha * dist_loss + (1-alpha) * diffusion_loss
 
             # Optimize
@@ -886,46 +993,61 @@ def train_nomad(
 
             # Update Exponential Moving Average of the model weights
             ema_model.step(model)
+            """
 
             # Logging
             loss_cpu = loss.item()
+            pose_loss_cpu = pose_loss.item()
+            diffusion_loss_cpu = diffusion_loss.item()
+
+            train_loggers["total_loss"].log_data(loss_cpu)
+            train_loggers["pose_loss"].log_data(pose_loss_cpu)
+            train_loggers["diffusion_loss"].log_data(diffusion_loss_cpu)
+
             tepoch.set_postfix(loss=loss_cpu)
-            
-            if use_wandb:
-                wandb.log({"total_loss": loss_cpu})
-                wandb.log({"dist_loss": dist_loss.item()})
-                wandb.log({"diffusion_loss": diffusion_loss.item()})
 
+            ema_data_log = {}
 
-            if i % print_log_freq == 0:
+            if print_log_freq != 0 and i % print_log_freq == 0:
+                for logger in train_loggers.values():
+                    print(f"(epoch {epoch}) (batch {i}/{num_batches - 1}) {logger.display()}")
+
                 with torch.inference_mode():
                     losses = _compute_losses_nomad(
                                 ema_model.averaged_model,
                                 noise_scheduler,
                                 batch_obs_images,
                                 batch_goal_images,
-                                distance.to(device),
+                                #distance.to(device),
+                                pose_align_target.to(device),
                                 actions.to(device),
                                 device,
                                 action_mask.to(device),
                                 predict_velocity=predict_velocity,
-                                ACTION_STATS =ACTION_STATS,
-                                max_distance=max_distance
+                                ACTION_STATS=ACTION_STATS,
+                                POSE_STATS=POSE_STATS,
+                                max_distance=max_distance,
+                                encoder_hist=encoder_hist,
+                                imu_hist=imu_hist,
+                                lidar_hist=lidar_hist,
                             )
                 
                 for key, value in losses.items():
-                    if key in loggers:
-                        logger = loggers[key]
+                    if key in ema_loggers:
+                        logger = ema_loggers[key]
                         logger.log_data(value.item())
-            
-                data_log = {}
-                for key, logger in loggers.items():
-                    data_log[logger.full_name()] = logger.latest()
-                    if i % print_log_freq == 0 and print_log_freq != 0:
-                        print(f"(epoch {epoch}) (batch {i}/{num_batches - 1}) {logger.display()}")
+	            
+                for key, logger in ema_loggers.items():
+                    ema_data_log[logger.full_name()] = logger.latest()
+                    print(f"(epoch {epoch}) (batch {i}/{num_batches - 1}) {logger.display()}")
 
-                if use_wandb and i % wandb_log_freq == 0 and wandb_log_freq != 0:
-                    wandb.log(data_log, commit=True)
+            if use_wandb and wandb_log_freq != 0 and i % wandb_log_freq == 0:
+                data_log = {}
+                for logger in train_loggers.values():
+                    data_log[logger.full_name()] = logger.latest()
+                    data_log[f"{logger.full_name()} moving_avg"] = logger.moving_average()
+                data_log.update(ema_data_log)
+                wandb.log(data_log, commit=True)
             
 
             if image_log_freq != 0 and i % image_log_freq == 0:
@@ -950,13 +1072,17 @@ def train_nomad(
                         use_wandb,
                         predict_velocity,
                         ACTION_STATS,
+                        POSE_STATS,
                         global_step=i,
                         ep_idx=ep_idx,
                         curr_time=curr_time,
                         episode_starts=dataloader.dataset.datasets[0].episode_starts, # TODO: 임시방편, concat 때문
                         action_mask=action_mask.cpu(),
                         dataset=dataloader.dataset.datasets[0], # TODO: 임시방편, concat 때문
-                        max_distance=max_distance
+                        max_distance=max_distance,
+                        encoder_hist=encoder_hist,
+                        imu_hist=imu_hist,
+                        lidar_hist=lidar_hist,
                     )
 
             # RAM monitor
@@ -988,6 +1114,7 @@ def evaluate_nomad(
     use_wandb: bool = True,
     predict_velocity = True,
     ACTION_STATS =None,
+    POSE_STATS=None,
     max_distance= 400
 ):
     """
@@ -1018,26 +1145,29 @@ def evaluate_nomad(
     num_batches = len(dataloader)
 
     # logger
-    uc_action_loss_logger = Logger("uc_action_loss", eval_type, window_size=print_log_freq)
-    uc_action_waypts_cos_sim_logger = Logger(
-        "uc_action_waypts_cos_sim", eval_type, window_size=print_log_freq
-    )
-    uc_multi_action_waypts_cos_sim_logger = Logger(
-        "uc_multi_action_waypts_cos_sim", eval_type, window_size=print_log_freq
-    )
-    gc_dist_loss_logger = Logger("gc_dist_loss", eval_type, window_size=print_log_freq)
-    gc_action_loss_logger = Logger("gc_action_loss", eval_type, window_size=print_log_freq)
-    gc_action_waypts_cos_sim_logger = Logger(
-        "gc_action_waypts_cos_sim", eval_type, window_size=print_log_freq
-    )
-    gc_multi_action_waypts_cos_sim_logger = Logger(
-        "gc_multi_action_waypts_cos_sim", eval_type, window_size=print_log_freq
-    )
+    eval_window_size = 10
+    uc_action_loss_logger = Logger("uc_action_loss", eval_type, window_size=eval_window_size)
+    # uc_action_waypts_cos_sim_logger = Logger(
+    #     "uc_action_waypts_cos_sim", eval_type, window_size=print_log_freq
+    # )
+    # uc_multi_action_waypts_cos_sim_logger = Logger(
+    #     "uc_multi_action_waypts_cos_sim", eval_type, window_size=print_log_freq
+    # )
+    #gc_dist_loss_logger = Logger("gc_dist_loss", eval_type, window_size=print_log_freq)
+    gc_pose_loss_logger = Logger("gc_pose_loss", eval_type, window_size=eval_window_size)
+    gc_action_loss_logger = Logger("gc_action_loss", eval_type, window_size=eval_window_size)
+    # gc_action_waypts_cos_sim_logger = Logger(
+    #     "gc_action_waypts_cos_sim", eval_type, window_size=print_log_freq
+    # )
+    # gc_multi_action_waypts_cos_sim_logger = Logger(
+    #     "gc_multi_action_waypts_cos_sim", eval_type, window_size=print_log_freq
+    # )
     loggers = {
         "uc_action_loss": uc_action_loss_logger,
         #"uc_action_waypts_cos_sim": uc_action_waypts_cos_sim_logger,
         #"uc_multi_action_waypts_cos_sim": uc_multi_action_waypts_cos_sim_logger,
-        "gc_dist_loss": gc_dist_loss_logger,
+        #"gc_dist_loss": gc_dist_loss_logger,
+        "gc_pose_loss": gc_pose_loss_logger,
         "gc_action_loss": gc_action_loss_logger,
         #"gc_action_waypts_cos_sim": gc_action_waypts_cos_sim_logger,
         #"gc_multi_action_waypts_cos_sim": gc_multi_action_waypts_cos_sim_logger,
@@ -1063,9 +1193,11 @@ def evaluate_nomad(
                     distance,
                     goal_pos,
                     dataset_idx,
-                    action_mask,
+                    action_mask, 
                     ep_idx,
                     curr_time,
+                    pose_align_target,
+                    sensor_dict,
                 ) = data
                 
                 """
@@ -1079,8 +1211,20 @@ def evaluate_nomad(
                 torch.as_tensor(ep_idx, dtype=torch.int64),
                 torch.as_tensor(curr_time, dtype=torch.int64),   
                 """
+                encoder_hist = sensor_dict.get("encoder_hist", None)
+                imu_hist = sensor_dict.get("imu_hist", None)
+                lidar_hist = sensor_dict.get("lidar_hist", None)
 
-                obs_images = torch.split(obs_image, 3, dim=1)
+                if encoder_hist is not None:
+                    encoder_hist = encoder_hist.to(device)
+                if imu_hist is not None:
+                    imu_hist = imu_hist.to(device)
+                if lidar_hist is not None:
+                    lidar_hist = lidar_hist.to(device)
+
+
+                obs_channels = goal_image.shape[1]  # image key 개수 * 3
+                obs_images = torch.split(obs_image, obs_channels, dim=1)
                 batch_viz_obs_images = TF.resize(obs_images[-1], VISUALIZATION_IMAGE_SIZE[::-1])
                 batch_viz_goal_images = TF.resize(goal_image, VISUALIZATION_IMAGE_SIZE[::-1])
                 batch_obs_images = [transform(obs) for obs in obs_images]
@@ -1095,16 +1239,38 @@ def evaluate_nomad(
                 goal_mask = torch.ones_like(rand_goal_mask).long().to(device)
                 no_mask = torch.zeros_like(rand_goal_mask).long().to(device)
 
-                rand_mask_cond = ema_model("vision_encoder", obs_img=batch_obs_images, goal_img=batch_goal_images, input_goal_mask=rand_goal_mask)
+                rand_mask_cond = ema_model(
+                    "vision_encoder",
+                    obs_img=batch_obs_images,
+                    goal_img=batch_goal_images,
+                    input_goal_mask=rand_goal_mask,
+                    encoder_hist=encoder_hist,
+                    imu_hist=imu_hist,
+                    lidar_hist=lidar_hist,
+                )
 
-                obsgoal_cond = ema_model("vision_encoder", obs_img=batch_obs_images, goal_img=batch_goal_images, input_goal_mask=no_mask)
-                obsgoal_cond = obsgoal_cond.flatten(start_dim=1)
+                obsgoal_cond = ema_model(
+                    "vision_encoder",
+                    obs_img=batch_obs_images,
+                    goal_img=batch_goal_images,
+                    input_goal_mask=no_mask,
+                    encoder_hist=encoder_hist,
+                    imu_hist=imu_hist,
+                    lidar_hist=lidar_hist,
+                )
 
-                goal_mask_cond = ema_model("vision_encoder", obs_img=batch_obs_images, goal_img=batch_goal_images, input_goal_mask=goal_mask)
+                goal_mask_cond = ema_model(
+                    "vision_encoder",
+                    obs_img=batch_obs_images,
+                    goal_img=batch_goal_images,
+                    input_goal_mask=goal_mask,
+                    encoder_hist=encoder_hist,
+                    imu_hist=imu_hist,
+                    lidar_hist=lidar_hist,
+                )
 
                 distance = distance.to(device)
-                
-
+            
                 ndiffusion_target = get_diffusion_target(actions, predict_velocity)
                 #ndiffusion_target = normalize_data(diffusion_target, ACTION_STATS)
                 
@@ -1164,13 +1330,18 @@ def evaluate_nomad(
                                 noise_scheduler,
                                 batch_obs_images,
                                 batch_goal_images,
-                                distance.to(device),
+                                #distance.to(device),
+                                pose_align_target.to(device),
                                 actions.to(device),
                                 device,
                                 action_mask.to(device),
                                 predict_velocity=predict_velocity,
                                 ACTION_STATS=ACTION_STATS,
-                                max_distance=max_distance
+                                POSE_STATS=POSE_STATS,
+                                max_distance=max_distance,
+                                encoder_hist=encoder_hist,
+                                imu_hist=imu_hist,
+                                lidar_hist=lidar_hist,
                             )
                     
                     for key, value in losses.items():
@@ -1181,6 +1352,7 @@ def evaluate_nomad(
                     data_log = {}
                     for key, logger in loggers.items():
                         data_log[logger.full_name()] = logger.latest()
+                        data_log[f"{logger.full_name()} moving_avg"] = logger.moving_average()
                         if i % print_log_freq == 0 and print_log_freq != 0:
                             print(f"(epoch {epoch}) (batch {i}/{num_batches - 1}) {logger.display()}")
 
@@ -1207,13 +1379,17 @@ def evaluate_nomad(
                         use_wandb,
                         predict_velocity,
                         ACTION_STATS,
+                        POSE_STATS,
                         global_step=i,
                         ep_idx=ep_idx,
                         curr_time=curr_time,
                         episode_starts=dataloader.dataset.episode_starts, # TODO: 임시방편
                         action_mask=action_mask.cpu(),
                         dataset=dataloader.dataset, # TODO: 임시방편
-                        max_distance=max_distance # TODO: 임시방편
+                        max_distance=max_distance, # TODO: 임시방편
+                        encoder_hist=encoder_hist,
+                        imu_hist=imu_hist,
+                        lidar_hist=lidar_hist,
                     )
                     traj_error_records.extend(records)
     
@@ -1298,6 +1474,27 @@ def unnormalize_data(ndata, stats):
     data = ndata * (stats['max'] - stats['min']) + stats['min']
     return data
 
+def unnormalize_pose(norm_pose, POSE_STATS):
+    if POSE_STATS is None:
+        return norm_pose
+
+    if isinstance(norm_pose, torch.Tensor):
+        scale = torch.tensor(
+            POSE_STATS["scale"],
+            device=norm_pose.device,
+            dtype=norm_pose.dtype,
+        )
+        min_val = torch.tensor(
+            POSE_STATS["min"],
+            device=norm_pose.device,
+            dtype=norm_pose.dtype,
+        )
+    else:
+        scale = np.asarray(POSE_STATS["scale"], dtype=np.float32)
+        min_val = np.asarray(POSE_STATS["min"], dtype=np.float32)
+
+    return (norm_pose + 1.0) / 2.0 * scale + min_val
+
 
 def get_delta(actions):
     # append zeros to first action
@@ -1341,14 +1538,33 @@ def model_output(
     num_samples: int,
     device: torch.device,
     predict_velocity: bool = True,
+    encoder_hist=None,
+    imu_hist=None,
+    lidar_hist=None,
 ):
     goal_mask = torch.ones((batch_goal_images.shape[0],)).long().to(device)
-    obs_cond = model("vision_encoder", obs_img=batch_obs_images, goal_img=batch_goal_images, input_goal_mask=goal_mask)
+    obs_cond = model(
+    "vision_encoder",
+    obs_img=batch_obs_images,
+    goal_img=batch_goal_images,
+    input_goal_mask=goal_mask,
+    encoder_hist=encoder_hist,
+    imu_hist=imu_hist,
+    lidar_hist=lidar_hist,
+)
     # obs_cond = obs_cond.flatten(start_dim=1)
     obs_cond = obs_cond.repeat_interleave(num_samples, dim=0)
 
     no_mask = torch.zeros((batch_goal_images.shape[0],)).long().to(device)
-    obsgoal_cond = model("vision_encoder", obs_img=batch_obs_images, goal_img=batch_goal_images, input_goal_mask=no_mask)
+    obsgoal_cond = model(
+        "vision_encoder",
+        obs_img=batch_obs_images,
+        goal_img=batch_goal_images,
+        input_goal_mask=no_mask,
+        encoder_hist=encoder_hist,
+        imu_hist=imu_hist,
+        lidar_hist=lidar_hist,
+    )
     # obsgoal_cond = obsgoal_cond.flatten(start_dim=1)  
     obsgoal_cond = obsgoal_cond.repeat_interleave(num_samples, dim=0)
 
@@ -1374,7 +1590,7 @@ def model_output(
             sample=diffusion_output
         ).prev_sample
 
-    uc_actions = get_action(diffusion_output,predict_velocity)
+    uc_actions = get_action(diffusion_output,predict_velocity=predict_velocity)
 
     # initialize action from Gaussian noise
     noisy_diffusion_output = torch.randn(
@@ -1396,15 +1612,19 @@ def model_output(
             timestep=k,
             sample=diffusion_output
         ).prev_sample
+    
     obsgoal_cond = obsgoal_cond.flatten(start_dim=1)
     
-    gc_actions = get_action(diffusion_output,predict_velocity)
-    gc_distance = model("dist_pred_net", obsgoal_cond=obsgoal_cond)
+    gc_actions = get_action(diffusion_output,predict_velocity=predict_velocity)
+    
+    #gc_distance = model("dist_pred_net", obsgoal_cond=obsgoal_cond)
+    gc_pose = model("pose_pred_net", obsgoal_cond=obsgoal_cond)
 
     return {
         'uc_actions': uc_actions,
         'gc_actions': gc_actions,
-        'gc_distance': gc_distance,
+        #'gc_distance': gc_distance,
+        'gc_pose': gc_pose,
     }
 
 # RK4
@@ -1447,6 +1667,7 @@ def visualize_diffusion_action_distribution(
     use_wandb: bool = True,
     predict_velocity= True,
     ACTION_STATS = None,
+    POSE_STATS=None,
     global_step=None,
     ep_idx=None,
     curr_time=None,
@@ -1454,7 +1675,10 @@ def visualize_diffusion_action_distribution(
     action_mask=None,
     dataset=None,
     max_distance = 400,
-    visualize_detail = False
+    visualize_detail = False,
+    encoder_hist=None,
+    imu_hist=None,
+    lidar_hist=None,
 ):
     """Plot samples from the exploration model."""
 
@@ -1475,6 +1699,15 @@ def visualize_diffusion_action_distribution(
     batch_goal_images = batch_goal_images[:num_images_log]
     batch_action_label = batch_action_label[:num_images_log]
     batch_goal_pos = batch_goal_pos[:num_images_log]
+
+    if encoder_hist is not None:
+        encoder_hist = encoder_hist[:num_images_log]
+
+    if imu_hist is not None:
+        imu_hist = imu_hist[:num_images_log]
+
+    if lidar_hist is not None:
+        lidar_hist = lidar_hist[:num_images_log]
     
     wandb_list = []
     traj_error_records = []
@@ -1502,8 +1735,12 @@ def visualize_diffusion_action_distribution(
             action_dim,
             num_samples,
             device,
-            predict_velocity=predict_velocity
+            predict_velocity=predict_velocity,
+            encoder_hist=encoder_hist,
+            imu_hist=imu_hist,
+            lidar_hist=lidar_hist,
         )
+
         uc_actions_list.append(to_numpy(model_output_dict['uc_actions']))
         gc_actions_list.append(to_numpy(model_output_dict['gc_actions']))
         gc_distances_list.append(to_numpy(model_output_dict['gc_distance']))

@@ -1,0 +1,90 @@
+# ai-nomad 노드 — 학습된 velocity-NoMaD (topomap 주행/스캔) 단독 compose.
+#
+#   # 1) 스캔(경로 1회 기록): 로봇 주행시키며 topomap 저장
+#   NOMAD_MODE=scan ENABLE_SEND=false docker compose up -d --build && docker compose logs -f
+#   # → ./topomap/0.png,1.png,... 생성. 충분히 모이면 down.
+#
+#   # 2) 주행: 저장된 topomap 따라 도킹 (MQTT 발행)
+#   NOMAD_MODE=navigate ENABLE_SEND=true docker compose up -d --build
+#
+#   # 비교(추론 전용, ai-control 과 동시 구동): ENABLE_SEND=false → 제어권 미점유·명령 미발행
+#
+# 전제: rc 스택(nats/livekit/connection) 가동 (cd ../../rc_server && ./scripts/local.sh up).
+# 이미지(ai-node-base)는 ai-control 과 공유. NoMaD 의존(diffusers/efficientnet_pytorch)이 없으면
+#   additional-nodes/Dockerfile 에 추가 후 재빌드 필요 (B안 standalone 으로 먼저 검증 권장).
+name: ai-nomad-pose
+
+services:
+  ai-nomad:
+    image: ai-node-base
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    pull_policy: never
+    working_dir: /app/ai-nomad-pose
+    command: ["python3", "-m", "ai_nomad_node"]
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      PYTHONUNBUFFERED: "1"
+      RC_NATS_URL: "nats://nats:4222"
+      RC_PROTOCOL_DIR: "/protocol"
+      LIVEKIT_URL: "ws://${LIVEKIT_HOST:-host.docker.internal}:${LIVEKIT_PORT:-47320}"
+      ROBOT_ID: "${ROBOT_ID:-7023}"
+      LOG_LEVEL: "${LOG_LEVEL:-INFO}"
+      # node_sdk + ai-nomad. vint_train/diffusion_policy 는 ai-nomad 안에 vendoring됨(/app/ai-nomad 에서 import).
+      PYTHONPATH: "/opt/rcpkg:/opt/nodes:/app/ai-nomad-pose"
+      # 모드/출력 (compose 명령에서 오버라이드)
+      NOMAD_MODE: "${NOMAD_MODE:-navigate}"
+      ENABLE_SEND: "${ENABLE_SEND:-true}"
+      NOMAD_OBS_STREAM: "${NOMAD_OBS_STREAM:-video2}"   # orbbec-0 = image_bottom (학습 카메라)
+      NOMAD_GOAL_NODE: "${NOMAD_GOAL_NODE:--1}"
+      NOMAD_NUM_SAMPLES: "${NOMAD_NUM_SAMPLES:-1}"
+      NOMAD_BGR_TO_RGB: "${NOMAD_BGR_TO_RGB:-true}"
+      SCAN_INTERVAL_SEC: "${SCAN_INTERVAL_SEC:-1.0}"
+      # 실환경 평가 trace (navigate 추론 기록). 비면 off. 켜면 ./eval/trace.csv 로 영속.
+      NOMAD_TRACE_PATH: "${NOMAD_TRACE_PATH:-}"
+      NVIDIA_VISIBLE_DEVICES: "all"
+      NVIDIA_DRIVER_CAPABILITIES: "all"
+      NVIDIA_DISABLE_REQUIRE: "true"
+      HF_TOKEN: "${HF_TOKEN:-}"
+      HF_HUB_OFFLINE: "${HF_HUB_OFFLINE:-0}"
+    volumes:
+      - ../../rc_server/rc/rc:/opt/rcpkg/rc:ro
+      - ../node_sdk:/opt/nodes/node_sdk:ro
+      - ../../rc_server/protocol:/protocol:ro
+      - ./ai_nomad_node:/app/ai-nomad-pose/ai_nomad_node:ro
+      - ./ai_models:/app/ai-nomad-pose/ai_models:ro
+      - ./config.yml:/app/ai-nomad-pose/config.yml:ro
+      # NoMaD 모델 코드 (vendoring: ai-nomad 안에 포함됨)
+      - ./vint_train:/app/ai-nomad-pose/vint_train:ro
+      - ./diffusion_policy:/app/ai-nomad-pose/diffusion_policy:ro
+      # 체크포인트(ai-nomad/models 에 포함) + topomap(쓰기: 스캔이 저장)
+      - ${NOMAD_CKPT_HOST:-./models/ema_18.pth}:/models/ai-nomad-pose/ema_18.pth:ro
+      - ${TOPOMAP_DIR_HOST:-./topomap}:/models/ai-nomad-pose/topomap
+      # 평가 결과(trace) 영속 — NOMAD_TRACE_PATH=/models/ai-nomad-pose/eval/trace.csv 로 켜면 여기 쌓임
+      - ${EVAL_DIR_HOST:-./eval}:/models/ai-nomad-pose/eval
+      - ${HF_CACHE_DIR:-../../models/hf-cache}:/root/.cache/huggingface
+    runtime: nvidia
+    ipc: host
+    privileged: true
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+    networks:
+      - rc-kernel-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  rc-kernel-network:
+    external: true
+    name: rc-kernel_rc-kernel-network
